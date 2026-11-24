@@ -383,18 +383,19 @@ foreach ($p in $selected) {
     $parts = @('claude')
     if ((Test-ClaudeHistory $p.Path) -and -not $Fresh) { $parts += '--continue' }
     if ($cArgs.Trim()) { $parts += ($cArgs.Trim() -replace ';', '\;') }   # args must not contain double quotes
-    $clauses += New-TabClause $p.Name $p.Path ($parts -join ' ') $color
+    # Tab titles: harness tab = "<harness>-<project>", every other tab = "shell-<scope>".
+    $clauses += New-TabClause "claude-code-$($p.Name)" $p.Path ($parts -join ' ') $color
 
     if ($pShell) {
         $shellCmd = $null
         if ($pDiff -and (Test-Path -LiteralPath (Join-Path $p.Path '.git'))) { $shellCmd = 'git status -sb\; git diff --stat' }
-        $clauses += New-TabClause "$($p.Name) shell" $p.Path $shellCmd $color
+        $clauses += New-TabClause "shell-$($p.Name)" $p.Path $shellCmd $color
     }
     if ($preset) {
         foreach ($t in @($preset.extraTabs)) {
             if (-not $t) { continue }
             if (-not (Test-Path -LiteralPath $t.path)) { Write-Warning "Directory not found: $($t.path)"; continue }
-            $clauses += New-TabClause $t.title $t.path $null $color
+            $clauses += New-TabClause "shell-$($t.title)" $t.path $null $color
         }
         foreach ($l in @($preset.launch)) { if ($l) { $extraApps += $l } }
     }

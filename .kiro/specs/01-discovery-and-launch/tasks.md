@@ -21,8 +21,11 @@
   - [x] 5.1 `Install-Shortcut.ps1` (Desktop `.lnk`, hidden window, WT icon, optional `-Project`)
 - [x] 6. Verified by dry run under Windows PowerShell 5.1 (paths with spaces, `\;` placement)
 
+- [x] 7. Tab naming (issue #1, naming part): harness tab `claude-code-<project>`, other tabs `shell-<scope>`
+
 ## Not done / ideas
 
+- [ ] Configurable harnesses (rest of issue #1; deliberately deferred, the tool stays Claude Code-centric)
 - [ ] Automated tests (Pester) asserting the generated `wt` string
 - [ ] Per-project startup command
 - [ ] Non-Windows terminals (tmux, iTerm)

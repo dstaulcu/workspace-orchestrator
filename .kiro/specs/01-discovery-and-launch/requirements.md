@@ -25,9 +25,9 @@ A launcher that finds recently active project folders and opens them as workspac
 **User story:** As a developer, I want all selected projects open in one terminal window with no manual `cd`.
 
 1. WHEN projects are launched THEN the system SHALL invoke `wt.exe` once, producing one window.
-2. FOR each project the system SHALL create a Claude Code tab titled with the folder name, starting in the project directory.
+2. FOR each project the system SHALL create a Claude Code tab titled `claude-code-<project>`, starting in the project directory.
 3. WHEN a project has Claude session history (`~\.claude\projects\<path-encoded>`) AND fresh mode is not requested THEN the Claude tab SHALL run `claude --continue`; otherwise `claude`.
-4. WHEN the shell tab is enabled (default) THEN the system SHALL create a PowerShell tab titled `<name> shell` in the project directory.
+4. WHEN the shell tab is enabled (default) THEN the system SHALL create a PowerShell tab titled `shell-<project>` in the project directory. Preset extra tabs SHALL be titled `shell-<title>`.
 5. WHEN the project is a git repository AND diff is enabled (default) THEN the shell tab SHALL run `git status -sb` and `git diff --stat` on open.
 6. WHEN tab colors are enabled (default) THEN all tabs of a project SHALL share a color derived deterministically from the project name.
 7. WHEN launching into a new window THEN the system SHALL finish by focusing the first tab.
