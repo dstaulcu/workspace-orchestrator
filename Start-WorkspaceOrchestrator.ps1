@@ -275,6 +275,37 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
         [void]$lv.Columns.Add($col[0], $col[1])
     }
 
+    # ListView column headers have no built-in tooltips, so hit-test the mouse against the header strip.
+    $colHelp = @(
+        "Project: folder name under the root.`n$([char]0x2605) = pinned (kept at the top). Green row = already open in a terminal.",
+        "Open: $([char]0x25CF) means a claude-code-<project> or shell-<project> tab is open in some Windows Terminal window.`nHighlight the row and click Switch to bring it forward.",
+        "Last active: how long ago the project's latest git commit was`n(or its newest file change if it isn't a git repo).",
+        "When: exact date and time of that last activity.",
+        "Branch: the current git branch (blank if not a git repo).",
+        "State: 'dirty' = uncommitted changes (modified, staged or untracked files); 'clean' = nothing to commit;`nblank = not a git repo. Does not show unpushed commits.",
+        "Path: full folder path of the project."
+    )
+    $tip = New-Object System.Windows.Forms.ToolTip
+    $ctx.TipCol = -1
+    $lv.Add_MouseMove({
+        param($s, $e)
+        $headerH = 24
+        if ($lv.TopItem) { $headerH = $lv.TopItem.Bounds.Top }
+        $col = -1
+        if ($e.Y -lt $headerH) {
+            $x = 0
+            for ($i = 0; $i -lt $lv.Columns.Count; $i++) {
+                $x += $lv.Columns[$i].Width
+                if ($e.X -lt $x) { $col = $i; break }
+            }
+        }
+        if ($col -ne $ctx.TipCol) {
+            $ctx.TipCol = $col
+            if ($col -ge 0) { $tip.Show($colHelp[$col], $lv, $e.X + 12, $headerH + 6, 12000) } else { $tip.Hide($lv) }
+        }
+    }.GetNewClosure())
+    $lv.Add_MouseLeave({ $ctx.TipCol = -1; $tip.Hide($lv) }.GetNewClosure())
+
     $status = New-Object System.Windows.Forms.Label
     $status.Text = ''; $status.AutoSize = $true; $status.Location = New-Object System.Drawing.Point(12, 552); $status.Anchor = 'Bottom,Left'
 

@@ -11,6 +11,7 @@ When run without selection arguments, the launcher shows a picker so the user ca
 
 1. WHEN no `-Project`, `-All` or `-List` is given THEN the system SHALL show a picker listing every project (unless `-Top N` limits it).
 2. The picker SHALL show name, relative time, absolute time, git branch, clean/dirty state and path.
+2a. WHEN the mouse hovers a column header THEN the picker SHALL show a tooltip explaining that column (Project, Open, Last active, When, Branch, State, Path).
 3. WHEN the user cancels or closes the picker THEN the system SHALL launch nothing.
 4. WHEN the user clicks Launch with nothing checked but rows highlighted THEN the highlighted rows SHALL be used; with neither, the picker SHALL stay open.
 

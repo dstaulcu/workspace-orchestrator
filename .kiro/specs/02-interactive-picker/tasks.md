@@ -23,8 +23,11 @@
   - [x] 6.5 Switch button; "Keep open after launch" checkbox; `keepOpen` config
   - [x] 6.6 Smoke test: picker opens and reports an open project found
 
+- [x] 7. Column header tooltips (R1.2a): ListView headers have no native tooltips, so `MouseMove` hit-tests the header strip and shows a `ToolTip` per column
+
 ## Not done / ideas
 
+- [ ] Hover-test the tooltips by hand (only load-tested)
 - [ ] Hands-on test of Launch / Switch button clicks (UI Automation can't see WinForms rows)
 - [ ] Double-click a row: switch if open, launch if not
 - [ ] System tray icon instead of a normal window
