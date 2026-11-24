@@ -1,0 +1,18 @@
+[
+  {
+    "name": "my-web-app",
+    "extraTabs": [
+      { "title": "Docs", "path": "C:\\Users\\you\\Documents\\my-web-app-docs" }
+    ],
+    "launch": [
+      { "exe": "C:\\Program Files\\Mozilla Firefox\\firefox.exe", "args": ["-p", "work"] }
+    ],
+    "claudeArgs": "--model sonnet",
+    "diff": false,
+    "tabColor": "#2A7F62"
+  },
+  {
+    "name": "scratch",
+    "shell": false
+  }
+]

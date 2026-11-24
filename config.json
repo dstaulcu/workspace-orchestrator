@@ -1,0 +1,14 @@
+{
+  "root": "C:\\code",
+  "top": 0,
+  "ignore": ["workspace_orchestrator"],
+  "noiseDirs": [".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build", ".next", "bin", "obj", ".idea", ".vscode"],
+  "maxScanFiles": 5000,
+  "maxScanDepth": 6,
+  "picker": "Forms",
+  "shell": true,
+  "diff": true,
+  "tabColors": true,
+  "gitInfo": true,
+  "claudeArgs": ""
+}

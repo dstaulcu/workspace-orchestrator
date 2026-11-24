@@ -1,0 +1,423 @@
+<#
+.SYNOPSIS
+    Scans a code root for projects (newest activity first), lets you pick some, and opens
+    ONE Windows Terminal window with, per project, a Claude Code tab and a PowerShell tab.
+
+.DESCRIPTION
+    Interactive (default): WinForms picker with filter, pinning (star), pre-checked last
+    selection, branch/dirty columns. Use -Picker Grid for plain Out-GridView.
+
+    Agent / scripted use (no UI):
+      -List                      print all projects as JSON and exit (launches nothing)
+      -Project a,b               launch exactly those projects (by folder name or full path)
+      -All [-Top N]              launch the N most recent (default 15)
+      add -DryRun to print the wt command line instead of launching
+
+    Defaults come from config.json (next to this script); switches/parameters override it.
+    Per-project overrides live in presets.json. Pins and last selection live in state.json.
+
+.PARAMETER Root       Folder whose immediate subfolders are projects.
+.PARAMETER Top        Limit list/picker to the N most recent (0 = all). With -All: how many to launch (default 15).
+.PARAMETER Filter     Pre-fill the picker filter / filter -List output (substring of name or path).
+.PARAMETER Project    One or more project names (comma-separated) or paths to launch without a picker.
+.PARAMETER All        Launch the top N without a picker.
+.PARAMETER List       Emit project metadata as JSON and exit.
+.PARAMETER Picker     Forms (default) or Grid.
+.PARAMETER Ignore     Folder names to skip.
+.PARAMETER Fresh      Use plain `claude` even when session history exists.
+.PARAMETER NoShell    Skip the PowerShell tab.
+.PARAMETER NoDiff     Don't run `git status -sb; git diff --stat` in the shell tab.
+.PARAMETER NoColor    Don't set tab colors.
+.PARAMETER Window     Value for wt's -w (e.g. 0 = most recent existing window). Default: wt's own behavior.
+.PARAMETER DryRun     Print the wt arguments instead of launching.
+#>
+[CmdletBinding()]
+param(
+    [string]$Root,
+    [int]$Top,
+    [string]$Filter,
+    [string[]]$Project,
+    [switch]$All,
+    [switch]$List,
+    [ValidateSet('Forms','Grid')][string]$Picker,
+    [string[]]$Ignore,
+    [switch]$Fresh,
+    [switch]$NoShell,
+    [switch]$NoDiff,
+    [switch]$NoColor,
+    [string]$Window,
+    [switch]$DryRun
+)
+
+# ---------------------------------------------------------------- config / state
+$cfg = @{
+    root = 'C:\code'; top = 0; ignore = @('workspace_orchestrator')
+    noiseDirs = @('.git','node_modules','.venv','venv','__pycache__','dist','build','.next','bin','obj','.idea','.vscode')
+    maxScanFiles = 5000; maxScanDepth = 6; picker = 'Forms'
+    shell = $true; diff = $true; tabColors = $true; gitInfo = $true; claudeArgs = ''
+}
+$cfgFile = Join-Path $PSScriptRoot 'config.json'
+if (Test-Path -LiteralPath $cfgFile) {
+    try { (Get-Content -LiteralPath $cfgFile -Raw | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $cfg[$_.Name] = $_.Value } }
+    catch { Write-Warning "Could not parse config.json: $_" }
+}
+if (-not $PSBoundParameters.ContainsKey('Root'))   { $Root = $cfg.root }
+if (-not $PSBoundParameters.ContainsKey('Top'))    { $Top = [int]$cfg.top }
+if (-not $PSBoundParameters.ContainsKey('Ignore')) { $Ignore = @($cfg.ignore) }
+if (-not $PSBoundParameters.ContainsKey('Picker')) { $Picker = $cfg.picker }
+$NoiseDirs = @($cfg.noiseDirs); $MaxScanFiles = [int]$cfg.maxScanFiles; $MaxScanDepth = [int]$cfg.maxScanDepth
+$wantShell = (-not $NoShell) -and [bool]$cfg.shell
+$wantDiff  = (-not $NoDiff)  -and [bool]$cfg.diff
+$wantColor = (-not $NoColor) -and [bool]$cfg.tabColors
+$Project = @($Project | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+
+$stateFile = Join-Path $PSScriptRoot 'state.json'
+$state = @{ pinned = @(); last = @() }
+if (Test-Path -LiteralPath $stateFile) {
+    try {
+        $s = Get-Content -LiteralPath $stateFile -Raw | ConvertFrom-Json
+        $state.pinned = @($s.pinned | Where-Object { $_ }); $state.last = @($s.last | Where-Object { $_ })
+    } catch { Write-Warning "Could not parse state.json: $_" }
+}
+function Save-State {
+    try { ([pscustomobject]@{ pinned = @($state.pinned); last = @($state.last) } | ConvertTo-Json) | Set-Content -LiteralPath $stateFile -Encoding UTF8 }
+    catch { Write-Warning "Could not save state.json: $_" }
+}
+
+$presets = @()
+$presetFile = Join-Path $PSScriptRoot 'presets.json'
+if (Test-Path -LiteralPath $presetFile) {
+    try { $presets = @(Get-Content -LiteralPath $presetFile -Raw | ConvertFrom-Json) }
+    catch { Write-Warning "Could not parse presets.json: $_" }
+}
+function Get-Preset([string]$Name) { $presets | Where-Object { $_.name -ieq $Name } | Select-Object -First 1 }
+
+# ---------------------------------------------------------------- discovery helpers
+function Get-LastActive([string]$Dir) {
+    # Git repos: latest commit time; falls through to file times if git is missing or no commits.
+    if (Test-Path -LiteralPath (Join-Path $Dir '.git')) {
+        try {
+            $ts = & git -C $Dir log -1 --format=%ct 2>$null
+            if ($LASTEXITCODE -eq 0 -and $ts -match '^\d+$') {
+                return [DateTimeOffset]::FromUnixTimeSeconds([long]$ts).LocalDateTime
+            }
+        } catch { }
+    }
+    # Otherwise newest file LastWriteTime, skipping noise dirs; depth and file count capped.
+    $newest = (Get-Item -LiteralPath $Dir).LastWriteTime
+    $count = 0
+    $stack = New-Object System.Collections.Stack
+    $stack.Push(@{ P = $Dir; D = 0 })
+    while ($stack.Count -gt 0 -and $count -lt $MaxScanFiles) {
+        $e = $stack.Pop(); $d = $e.P; $depth = [int]$e.D
+        try { $items = Get-ChildItem -LiteralPath $d -Force -ErrorAction Stop } catch { continue }
+        foreach ($i in $items) {
+            if ($i.PSIsContainer) {
+                if ($NoiseDirs -notcontains $i.Name -and $depth -lt $MaxScanDepth) { $stack.Push(@{ P = $i.FullName; D = $depth + 1 }) }
+            } else {
+                $count++
+                if ($i.LastWriteTime -gt $newest) { $newest = $i.LastWriteTime }
+            }
+        }
+    }
+    return $newest
+}
+
+function Format-Relative([DateTime]$When) {
+    $s = (Get-Date) - $When
+    if ($s.TotalMinutes -lt 60) { return '{0} min ago' -f [int][Math]::Max(1, $s.TotalMinutes) }
+    if ($s.TotalHours   -lt 24) { return '{0} h ago'   -f [int]$s.TotalHours }
+    if ($s.TotalDays    -lt 60) { return '{0} d ago'   -f [int]$s.TotalDays }
+    return '{0} mo ago' -f [int]($s.TotalDays / 30)
+}
+
+function Test-ClaudeHistory([string]$Dir) {
+    # Claude Code stores sessions under ~\.claude\projects\<path with every non-alphanumeric -> '-'>
+    $enc = $Dir -replace '[^A-Za-z0-9]', '-'
+    return (Test-Path -LiteralPath (Join-Path $env:USERPROFILE ".claude\projects\$enc"))
+}
+
+function Get-GitInfo([string]$Dir) {
+    if (-not (Test-Path -LiteralPath (Join-Path $Dir '.git'))) { return $null }
+    $branch = ''; $dirty = $null
+    try {
+        $branch = [string](& git -C $Dir branch --show-current 2>$null)
+        $dirty = [bool](& git -C $Dir status --porcelain 2>$null | Select-Object -First 1)
+    } catch { }
+    [pscustomobject]@{ Branch = $branch; Dirty = $dirty }
+}
+
+# Pinned projects first, then newest-first (input is already newest-first).
+function Sort-Projects($Rows) {
+    $pin = @($Rows | Where-Object { $state.pinned -contains $_.Path })
+    $rest = @($Rows | Where-Object { $state.pinned -notcontains $_.Path })
+    @($pin) + @($rest)
+}
+
+# Stable per-project tab color: hash of the name -> hue.
+function Get-TabColor([string]$Name) {
+    $h = 0
+    foreach ($c in $Name.ToCharArray()) { $h = ($h * 31 + [int]$c) % 360 }
+    $s = 0.55; $l = 0.42
+    $c = (1 - [Math]::Abs(2 * $l - 1)) * $s
+    $x = $c * (1 - [Math]::Abs((($h / 60) % 2) - 1))
+    $m = $l - $c / 2
+    switch ([int][Math]::Floor($h / 60)) {
+        0 { $r = $c; $g = $x; $b = 0 } 1 { $r = $x; $g = $c; $b = 0 } 2 { $r = 0; $g = $c; $b = $x }
+        3 { $r = 0; $g = $x; $b = $c } 4 { $r = $x; $g = 0; $b = $c } default { $r = $c; $g = 0; $b = $x }
+    }
+    '#{0:X2}{1:X2}{2:X2}' -f [int](($r + $m) * 255), [int](($g + $m) * 255), [int](($b + $m) * 255)
+}
+
+# ---------------------------------------------------------------- wt command building
+# --- wt quoting rules (fragile!) ---
+# * The whole wt command line is ONE string, passed verbatim by Start-Process;
+#   wt does its own parsing. Never pass an array of args.
+# * ';' is a wt command separator even inside quotes. Real separators between
+#   new-tab clauses are ' ; '. A ';' INSIDE a tab's command must be '\;'.
+# * Paths: escaped double quotes for wt/-d, single quotes inside -Command.
+function ConvertTo-PsLiteral([string]$s) { "'" + ($s -replace "'", "''") + "'" }
+
+function New-TabClause([string]$Title, [string]$Dir, [string]$Command, [string]$Color) {
+    $inner = "Set-Location -LiteralPath $(ConvertTo-PsLiteral $Dir)"
+    if ($Command) { $inner += "\; $Command" }
+    $col = ''
+    if ($Color) { $col = " --tabColor `"$Color`"" }
+    "new-tab --title `"$Title`"$col --suppressApplicationTitle -d `"$Dir`" powershell.exe -NoExit -Command `"$inner`""
+}
+
+# ---------------------------------------------------------------- pickers
+function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [bool]$InitialFresh) {
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+    [System.Windows.Forms.Application]::EnableVisualStyles()
+    $ctx = @{
+        Rebuilding = $false
+        Pinned  = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+        Checked = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    }
+    foreach ($p in $state.pinned) { [void]$ctx.Pinned.Add($p) }
+    foreach ($p in $Preselect)    { [void]$ctx.Checked.Add($p) }
+
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = 'Workspace Picker'; $form.ClientSize = New-Object System.Drawing.Size(1040, 600)
+    $form.StartPosition = 'CenterScreen'; $form.TopMost = $true; $form.KeyPreview = $true
+
+    $lbl = New-Object System.Windows.Forms.Label
+    $lbl.Text = 'Filter:'; $lbl.Location = New-Object System.Drawing.Point(12, 16); $lbl.AutoSize = $true
+    $filterBox = New-Object System.Windows.Forms.TextBox
+    $filterBox.Location = New-Object System.Drawing.Point(60, 12); $filterBox.Width = 320; $filterBox.Text = $InitialFilter
+    $hint = New-Object System.Windows.Forms.Label
+    $hint.Text = 'Check projects, then Launch (Enter). Pin keeps a project at the top.'
+    $hint.Location = New-Object System.Drawing.Point(400, 16); $hint.AutoSize = $true
+
+    $lv = New-Object System.Windows.Forms.ListView
+    $lv.View = 'Details'; $lv.CheckBoxes = $true; $lv.FullRowSelect = $true; $lv.GridLines = $true; $lv.HideSelection = $false
+    $lv.Location = New-Object System.Drawing.Point(12, 44); $lv.Size = New-Object System.Drawing.Size(1016, 500)
+    $lv.Anchor = 'Top,Bottom,Left,Right'
+    foreach ($col in @(@('Project', 230), @('Last active', 90), @('When', 130), @('Branch', 130), @('State', 60), @('Path', 360))) {
+        [void]$lv.Columns.Add($col[0], $col[1])
+    }
+
+    $chkFresh = New-Object System.Windows.Forms.CheckBox
+    $chkFresh.Text = 'Fresh sessions (no --continue)'; $chkFresh.Checked = $InitialFresh; $chkFresh.AutoSize = $true
+    $chkFresh.Location = New-Object System.Drawing.Point(12, 560); $chkFresh.Anchor = 'Bottom,Left'
+    $btnPin = New-Object System.Windows.Forms.Button
+    $btnPin.Text = 'Pin / Unpin'; $btnPin.Size = New-Object System.Drawing.Size(100, 28)
+    $btnPin.Location = New-Object System.Drawing.Point(600, 556); $btnPin.Anchor = 'Bottom,Right'
+    $btnGo = New-Object System.Windows.Forms.Button
+    $btnGo.Text = 'Launch'; $btnGo.Size = New-Object System.Drawing.Size(100, 28)
+    $btnGo.Location = New-Object System.Drawing.Point(810, 556); $btnGo.Anchor = 'Bottom,Right'
+    $btnCancel = New-Object System.Windows.Forms.Button
+    $btnCancel.Text = 'Cancel'; $btnCancel.Size = New-Object System.Drawing.Size(100, 28)
+    $btnCancel.Location = New-Object System.Drawing.Point(920, 556); $btnCancel.Anchor = 'Bottom,Right'
+    $btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    $form.AcceptButton = $btnGo; $form.CancelButton = $btnCancel
+    $form.Controls.AddRange(@($lbl, $filterBox, $hint, $lv, $chkFresh, $btnPin, $btnGo, $btnCancel))
+
+    # Event handlers run in a closure, so share mutable state through $ctx only.
+    $fill = {
+        $ctx.Rebuilding = $true
+        $lv.BeginUpdate(); $lv.Items.Clear()
+        $f = $filterBox.Text.Trim()
+        $ordered = @($Rows | Where-Object { $ctx.Pinned.Contains($_.Path) }) + @($Rows | Where-Object { -not $ctx.Pinned.Contains($_.Path) })
+        foreach ($r in $ordered) {
+            if ($f -and $r.Name.IndexOf($f, [StringComparison]::OrdinalIgnoreCase) -lt 0 -and $r.Path.IndexOf($f, [StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
+            $star = ''
+            if ($ctx.Pinned.Contains($r.Path)) { $star = [string][char]0x2605 + ' ' }
+            $it = New-Object System.Windows.Forms.ListViewItem(($star + $r.Name))
+            $st = ''
+            if ($r.Dirty -eq $true) { $st = 'dirty' } elseif ($r.Dirty -eq $false) { $st = 'clean' }
+            [void]$it.SubItems.Add($r.Relative); [void]$it.SubItems.Add($r.LastActive)
+            [void]$it.SubItems.Add([string]$r.Branch); [void]$it.SubItems.Add($st); [void]$it.SubItems.Add($r.Path)
+            $it.Tag = $r.Path
+            $it.Checked = $ctx.Checked.Contains($r.Path)
+            [void]$lv.Items.Add($it)
+        }
+        $lv.EndUpdate()
+        $ctx.Rebuilding = $false
+    }.GetNewClosure()
+
+    $lv.Add_ItemChecked({
+        param($s, $e)
+        if ($ctx.Rebuilding) { return }
+        if ($e.Item.Checked) { [void]$ctx.Checked.Add([string]$e.Item.Tag) } else { [void]$ctx.Checked.Remove([string]$e.Item.Tag) }
+    }.GetNewClosure())
+    $filterBox.Add_TextChanged({ & $fill }.GetNewClosure())
+    $btnPin.Add_Click({
+        $paths = @($lv.SelectedItems | ForEach-Object { [string]$_.Tag })
+        foreach ($p in $paths) { if ($ctx.Pinned.Contains($p)) { [void]$ctx.Pinned.Remove($p) } else { [void]$ctx.Pinned.Add($p) } }
+        & $fill
+    }.GetNewClosure())
+    $btnGo.Add_Click({
+        if ($ctx.Checked.Count -eq 0) { foreach ($i in $lv.SelectedItems) { [void]$ctx.Checked.Add([string]$i.Tag) } }
+        if ($ctx.Checked.Count -eq 0) { return }   # nothing chosen: stay open
+        $form.DialogResult = [System.Windows.Forms.DialogResult]::OK
+    }.GetNewClosure())
+
+    & $fill
+    $form.Add_Shown({ $form.Activate(); $filterBox.Focus() }.GetNewClosure())
+    $result = $form.ShowDialog()
+    [pscustomobject]@{
+        Launch = ($result -eq [System.Windows.Forms.DialogResult]::OK)
+        Paths  = @($ctx.Checked)
+        Pinned = @($ctx.Pinned)
+        Fresh  = $chkFresh.Checked
+    }
+}
+
+# ---------------------------------------------------------------- discover
+if (-not (Test-Path -LiteralPath $Root)) { Write-Warning "Root not found: $Root"; exit 1 }
+
+$dirs = @(Get-ChildItem -LiteralPath $Root -Directory -Force |
+    Where-Object { $Ignore -notcontains $_.Name -and $_.Name -notlike '.*' })
+
+function New-Row($d, [bool]$Scan, [bool]$Git) {
+    $la = $null
+    if ($Scan) { $la = Get-LastActive $d.FullName }
+    $gi = $null
+    if ($Git) { $gi = Get-GitInfo $d.FullName }
+    $hasGit = Test-Path -LiteralPath (Join-Path $d.FullName '.git')
+    [pscustomobject]@{
+        Name = $d.Name; Path = $d.FullName
+        LastActiveDt = $la
+        Relative   = $(if ($la) { Format-Relative $la } else { '' })
+        LastActive = $(if ($la) { $la.ToString('yyyy-MM-dd HH:mm') } else { '' })
+        IsGit = $hasGit
+        Branch = $(if ($gi) { $gi.Branch } else { $null })
+        Dirty  = $(if ($gi) { $gi.Dirty } else { $null })
+        Pinned = ($state.pinned -contains $d.FullName)
+        HasHistory = (Test-ClaudeHistory $d.FullName)
+        HasPreset = [bool](Get-Preset $d.Name)
+    }
+}
+
+# Fast path: -Project names given -> no scan, no git info needed.
+if ($Project.Count -gt 0 -and -not $List) {
+    $selected = @()
+    foreach ($want in $Project) {
+        $m = $dirs | Where-Object { $_.Name -ieq $want -or $_.FullName -ieq $want } | Select-Object -First 1
+        if (-not $m -and (Test-Path -LiteralPath $want -PathType Container)) { $m = Get-Item -LiteralPath $want }
+        if ($m) { $selected += (New-Row $m $false $false) } else { Write-Warning "Project not found: $want" }
+    }
+    if ($selected.Count -eq 0) { exit 1 }
+    $viaPicker = $false
+} else {
+    $needGit = [bool]$cfg.gitInfo -and ($List -or ($Picker -eq 'Forms' -and -not $All))
+    $rows = @($dirs | ForEach-Object { New-Row $_ $true $needGit } | Sort-Object LastActiveDt -Descending)
+    $rows = @(Sort-Projects $rows)
+    if ($Filter) {
+        $rows = @($rows | Where-Object { $_.Name -like "*$Filter*" -or $_.Path -like "*$Filter*" })
+    }
+    if ($Project.Count -gt 0) { $rows = @($rows | Where-Object { $Project -contains $_.Name -or $Project -contains $_.Path }) }
+    if ($Top -gt 0 -and -not $All) { $rows = @($rows | Select-Object -First $Top) }
+
+    if ($List) {
+        $out = @($rows | ForEach-Object {
+            [pscustomobject]@{
+                name = $_.Name; path = $_.Path
+                lastActive = $(if ($_.LastActiveDt) { $_.LastActiveDt.ToString('o') } else { $null })
+                pinned = $_.Pinned; isGit = $_.IsGit; branch = $_.Branch; dirty = $_.Dirty
+                hasClaudeHistory = $_.HasHistory; hasPreset = $_.HasPreset
+            } })
+        ConvertTo-Json -InputObject $out -Depth 3
+        return
+    }
+
+    $viaPicker = -not $All
+    if ($All) {
+        $n = 15; if ($Top -gt 0) { $n = $Top }
+        $selected = @($rows | Select-Object -First $n)
+    } elseif ($Picker -eq 'Grid') {
+        $picked = @($rows | Select-Object Name, Relative, LastActive, Branch, Path |
+            Out-GridView -Title 'Workspace Picker: select projects (Ctrl/Shift for multiple)' -PassThru)
+        $selected = @($rows | Where-Object { $picked.Path -contains $_.Path })
+    } else {
+        $pick = Show-FormsPicker $rows $Filter @($state.last) ([bool]$Fresh)
+        $state.pinned = @($pick.Pinned)
+        if (-not $DryRun) { Save-State }
+        if (-not $pick.Launch) { return }            # cancelled: launch nothing
+        if ($pick.Fresh) { $Fresh = [switch]::new($true) }
+        $selected = @($rows | Where-Object { $pick.Paths -contains $_.Path })
+        # Pins may have changed: keep launch order consistent with the display order.
+        $selected = @(Sort-Projects $selected)
+    }
+}
+if (-not $selected -or $selected.Count -eq 0) { return }   # cancelled / empty: launch nothing
+
+# ---------------------------------------------------------------- build
+$clauses = @()
+$extraApps = @()
+foreach ($p in $selected) {
+    if (-not (Test-Path -LiteralPath $p.Path)) { Write-Warning "Directory not found: $($p.Path)"; continue }
+    $preset = Get-Preset $p.Name
+
+    # Per-project overrides from presets.json fall back to the global settings.
+    $pShell = $wantShell; if ($preset -and $null -ne $preset.shell) { $pShell = [bool]$preset.shell -and (-not $NoShell) }
+    $pDiff  = $wantDiff;  if ($preset -and $null -ne $preset.diff)  { $pDiff  = [bool]$preset.diff  -and (-not $NoDiff) }
+    $cArgs  = [string]$cfg.claudeArgs; if ($preset -and $null -ne $preset.claudeArgs) { $cArgs = [string]$preset.claudeArgs }
+    $color  = $null
+    if ($wantColor) { $color = Get-TabColor $p.Name; if ($preset -and $preset.tabColor) { $color = [string]$preset.tabColor } }
+
+    # claude --continue only when prior session history exists (and not -Fresh).
+    $parts = @('claude')
+    if ((Test-ClaudeHistory $p.Path) -and -not $Fresh) { $parts += '--continue' }
+    if ($cArgs.Trim()) { $parts += ($cArgs.Trim() -replace ';', '\;') }   # args must not contain double quotes
+    $clauses += New-TabClause $p.Name $p.Path ($parts -join ' ') $color
+
+    if ($pShell) {
+        $shellCmd = $null
+        if ($pDiff -and (Test-Path -LiteralPath (Join-Path $p.Path '.git'))) { $shellCmd = 'git status -sb\; git diff --stat' }
+        $clauses += New-TabClause "$($p.Name) shell" $p.Path $shellCmd $color
+    }
+    if ($preset) {
+        foreach ($t in @($preset.extraTabs)) {
+            if (-not $t) { continue }
+            if (-not (Test-Path -LiteralPath $t.path)) { Write-Warning "Directory not found: $($t.path)"; continue }
+            $clauses += New-TabClause $t.title $t.path $null $color
+        }
+        foreach ($l in @($preset.launch)) { if ($l) { $extraApps += $l } }
+    }
+}
+if ($clauses.Count -eq 0) { return }
+
+$prefix = ''
+$newWindow = (-not $Window) -or ($Window -eq 'new')
+if ($Window) { $prefix = "-w $Window " }
+if ($newWindow) { $clauses += 'focus-tab -t 0' }   # skipped when attaching to an existing window
+$wtArgs = $prefix + ($clauses -join ' ; ')
+
+# ---------------------------------------------------------------- launch
+if ($viaPicker -and $selected.Count -gt 0 -and -not $DryRun) {
+    $state.last = @($selected | ForEach-Object { $_.Path }); Save-State
+}
+if ($DryRun) {
+    Write-Output $wtArgs
+    foreach ($a in $extraApps) { Write-Output "LAUNCH: $($a.exe) $(@($a.args) -join ' ')" }
+    return
+}
+Start-Process -FilePath 'wt.exe' -ArgumentList $wtArgs
+foreach ($a in $extraApps) {
+    if (-not (Test-Path -LiteralPath $a.exe)) { Write-Warning "Executable not found: $($a.exe)"; continue }
+    if ($a.args) { Start-Process -FilePath $a.exe -ArgumentList @($a.args) } else { Start-Process -FilePath $a.exe }
+}
