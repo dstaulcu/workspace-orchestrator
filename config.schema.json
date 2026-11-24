@@ -16,6 +16,7 @@
     "diff":         { "type": "boolean", "default": true, "description": "Run 'git status -sb; git diff --stat' in the shell tab of git repos. -NoDiff overrides; presets can override." },
     "tabColors":    { "type": "boolean", "default": true, "description": "Color tabs by a hash of the project name. -NoColor overrides." },
     "gitInfo":      { "type": "boolean", "default": true, "description": "Show branch, state and remote columns in the picker." },
+    "refreshSeconds": { "type": "integer", "minimum": 0, "default": 60, "description": "While the picker is open, re-check which projects have tabs open every N seconds (minimum 5); 0 = off. The list only redraws when something changed." },
     "keepOpen":     { "type": "boolean", "default": true, "description": "Keep the picker open after launching." },
     "claudeArgs":   { "type": "string", "default": "", "description": "Extra arguments for claude in every project (no double quotes). Presets can override per project." }
   }

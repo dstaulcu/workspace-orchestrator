@@ -1,10 +1,23 @@
 # Workspace Orchestrator
 
-> **Status: experimental (v0.1).** Windows only. Works on my machine; expect rough edges. Issues and ideas welcome.
+> **Status: experimental (v0.3).** Windows only. Works on my machine; expect rough edges. Issues and ideas welcome.
 
-One click, and every project you're actively working on is open in **one Windows Terminal window**: a [Claude Code](https://claude.com/claude-code) session and a PowerShell prompt per project, each already in the right folder, each color-coded.
+**Tame your sea of projects and terminals, and restart your whole workday in one click.**
 
-If you juggle several repos and keep re-opening terminals, `cd`-ing around, and typing `claude --continue`, this removes that ritual.
+If you work across a dozen repos, you know the drill: dozens of terminal windows, no idea which one is the API and which is the docs, and every morning the same ritual of opening a terminal, `cd`-ing into a project, running `claude --continue`, opening a second tab for `git status`... times every project. Workspace Orchestrator is a small picker that does that for you.
+
+- **Start the day in one click.** Your projects are listed newest-activity first, and yesterday's selection is pre-checked. Press **Launch** and each project opens in its own [Windows Terminal](https://aka.ms/terminal) window: a [Claude Code](https://claude.com/claude-code) session that resumes the last conversation, plus a shell tab showing `git status` and a diff summary, already in the right folder and color-coded.
+- **Always know what's open.** Leave the picker running. It watches your terminals (refreshing every 60 seconds by default), marks every project that already has tabs open, and **Switch** jumps straight to the right tab in the right window, however buried it is. Launching a project that's already open just brings it to the front instead of duplicating it.
+- **See where everything stands.** Last activity, branch, dirty/clean state and a clickable link to each repo's remote (GitHub, GitLab, anything) in one list. Pin the projects you always want at the top.
+- **Make it yours.** Per-project extra tabs, apps and Claude arguments; settings live in `~\.config\workspace_picker\` and are one **Settings** click away. AI agents and scripts can drive it too (agent mode).
+
+```mermaid
+flowchart LR
+    M["Morning:<br/>open the picker"] --> L["Launch<br/>(yesterday's set pre-checked)"]
+    L --> W["A window per project:<br/>Claude session + shell"]
+    W --> D["All day:<br/>picker shows what's open,<br/>Switch jumps to it"]
+    D --> M
+```
 
 ---
 
@@ -57,28 +70,25 @@ Building one by hand means: open a terminal, `cd`, run `claude --continue`, open
 flowchart LR
     D["Discover<br/>project folders"] --> R["Rank<br/>by recent activity"]
     R --> P["Pick<br/>(UI) or name them<br/>(script / agent)"]
-    P --> B["Build<br/>one wt command"]
+    P --> B["Build<br/>wt command per project"]
     B --> L["Launch<br/>one window per project, 2+ tabs each"]
 ```
 
-What you get after picking, say, three projects:
+What you get after picking, say, three projects (one window each):
 
 ```mermaid
-flowchart TB
-    subgraph WIN["One Windows Terminal window"]
-        direction LR
-        subgraph A["api-server (blue)"]
-            A1["claude --continue"]
-            A2["shell: git status + diff --stat"]
-        end
-        subgraph B["web-ui (green)"]
-            B1["claude --continue"]
-            B2["shell: git status + diff --stat"]
-        end
-        subgraph C["notes (orange)"]
-            C1["claude"]
-            C2["shell"]
-        end
+flowchart LR
+    subgraph A["Window: api-server (blue)"]
+        A1["cc:api-server<br/>claude --continue"]
+        A2["sh:api-server<br/>git status + diff --stat"]
+    end
+    subgraph B["Window: web-ui (green)"]
+        B1["cc:web-ui<br/>claude --continue"]
+        B2["sh:web-ui<br/>git status + diff --stat"]
+    end
+    subgraph C["Window: notes (orange)"]
+        C1["cc:notes<br/>claude"]
+        C2["sh:notes<br/>shell"]
     end
 ```
 
@@ -88,16 +98,17 @@ flowchart TB
 
 | You want to... | Use |
 |---|---|
-| Start the day with your active repos open | Double-click the **Workspace Picker** desktop shortcut |
+| Start the day with your active repos open | Double-click the **Workspace Picker** desktop shortcut, then **Launch** |
 | See what you touched last | Picker sorts by last git commit (or newest file) |
 | Keep favorites at the top | **Pin** in the picker |
 | Re-open yesterday's set | Last selection is pre-checked |
-| Find an already-open workspace among many terminal windows | Keep the picker open; **Switch** raises the right tab and window |
+| Find an already-open workspace among many terminal windows | Keep the picker open; **Switch** raises the right tab and window. It rechecks every 60 s (`refreshSeconds`) |
+| Avoid opening a project twice | Launch on an open project just raises it (Shift+Launch forces a new copy) |
 | Jump from a project to its remote repo | Click the **Remote** column (owner/repo on GitHub, host/path elsewhere) in the picker |
 | Know at a glance which repo has uncommitted work | Branch + dirty/clean columns; shell tab shows `git status` and a diff summary on open |
 | Tell projects apart in the tab strip | Stable per-project tab colors |
 | Resume a Claude conversation automatically | `--continue` is used only when a prior session exists |
-| Add project-specific tabs/apps | `presets.json` |
+| Add project-specific tabs/apps | `presets.json` (the picker's **Settings** button) |
 | Let an AI agent or a script open workspaces | **Agent mode** (below) |
 
 ---
@@ -130,11 +141,11 @@ Check the projects you want, press **Launch** (or Enter). Type in the filter box
 
 ### Stay open and jump between workspaces
 
-The picker stays open after launching (untick **Keep open after launch**, or set `keepOpen: false`, for the old close-on-launch behavior). Projects that already have tabs open in any Windows Terminal window show a ● and a green row. Highlight one and click **Switch** to select its tab and bring its window to the front. That's the answer to "I have a sea of terminals and can't find the right one."
+The picker stays open after launching and quietly rechecks your terminals every `refreshSeconds` (60 by default; `0` turns it off), redrawing only when something changed (untick **Keep open after launch**, or set `keepOpen: false`, for the old close-on-launch behavior). Projects that already have tabs open in any Windows Terminal window show a ● and a green row. Highlight one and click **Switch** to select its tab and bring its window to the front. That's the answer to "I have a sea of terminals and can't find the right one."
 
 ```mermaid
 flowchart LR
-    P["Picker (stays open)"] -- "Refresh / on return" --> UIA["Windows UI Automation<br/>reads tab titles in every<br/>Windows Terminal window"]
+    P["Picker (stays open)"] -- "Every 60 s / on return / Refresh" --> UIA["Windows UI Automation<br/>reads tab titles in every<br/>Windows Terminal window"]
     UIA -- "cc:api-server<br/>sh:api-server ..." --> P
     P -- "Switch" --> F["Select that tab,<br/>raise its window"]
     P -- "Launch" --> N["Open new tabs"]
@@ -148,7 +159,7 @@ Prefer a plain list? `-Picker Grid` uses PowerShell's `Out-GridView`.
 
 ## Agent mode (no UI)
 
-Orchestration works for AI agents and scripts too. Nothing in this mode opens a dialog.
+Orchestration works for AI agents and scripts too. Projects that are already open are focused instead of launched again. Nothing in this mode opens a dialog.
 
 ```mermaid
 sequenceDiagram
@@ -161,7 +172,7 @@ sequenceDiagram
     Agent->>WO: -Project api-server,web-ui -DryRun
     WO-->>Agent: the exact wt command (nothing launched)
     Agent->>WO: -Project api-server,web-ui
-    WO->>WT: one window, 2 tabs per project
+    WO->>WT: a window per project, 2 tabs each
 ```
 
 ```powershell
@@ -191,7 +202,7 @@ Exit code is `1` when none of the requested projects exist.
 | `-Fresh` | Plain `claude`, ignore session history |
 | `-NoShell` / `-NoDiff` / `-NoColor` | Drop the shell tab / the git summary / tab colors |
 | `-Focus <name>` | Bring an open project's tab and window to the foreground (no UI) |
-| `-Window <id>` | Add tabs to an existing Windows Terminal window (e.g. `0`) |
+| `-Window <id>` | Put all tabs in one existing Windows Terminal window (e.g. `0`) instead of a new window per project |
 | `-DryRun` | Print the `wt` arguments instead of launching |
 
 ## Configuration
@@ -226,6 +237,7 @@ All three files live in `~\.config\workspace_picker\` (outside the repo, so upda
 | `tabColors` | bool | `true` | Color tabs by project name | `-NoColor`, preset `tabColor` |
 | `gitInfo` | bool | `true` | Show branch / state / remote columns | none |
 | `keepOpen` | bool | `true` | Keep the picker open after launching | picker checkbox |
+| `refreshSeconds` | int | `60` | While the picker is open, re-check which projects have tabs open every N seconds (min 5; `0` = off) | none |
 | `claudeArgs` | string | `""` | Extra `claude` arguments (no double quotes) | preset |
 
 ### `presets.json` reference

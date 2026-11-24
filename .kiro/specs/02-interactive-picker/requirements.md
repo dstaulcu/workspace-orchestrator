@@ -38,7 +38,7 @@ When run without selection arguments, the launcher shows a picker so the user ca
 
 1. WHEN `keepOpen` is true (default; also a checkbox) THEN the picker SHALL remain open after Launch and SHALL uncheck the launched projects.
 2. The picker SHALL show which projects have an open `cc:<project>` or `sh:<project>` tab in any Windows Terminal window (● column and highlighted row).
-3. The open-project list SHALL refresh on opening, on a Refresh button, when the picker regains focus (throttled to once per 3 s), and about 4 s after a launch.
+3. The open-project list SHALL refresh on opening, on a Refresh button, when the picker regains focus (throttled to once per 3 s), about 4 s after a launch, and periodically in the background (R11).
 4. WHEN the user highlights a project and clicks Switch THEN the system SHALL select that project's `cc:` tab (else its `sh:` tab) and bring its window to the foreground, restoring it if minimized.
 5. IF no matching tab exists THEN the picker SHALL say so and leave the list unchanged.
 6. IF UI Automation is unavailable THEN no project SHALL be shown as open and launching SHALL still work.
@@ -57,3 +57,7 @@ When run without selection arguments, the launcher shows a picker so the user ca
 
 
 
+
+### R11. Background refresh
+1. WHILE the picker is open it SHALL re-check which projects have tabs open every `refreshSeconds` seconds (default 60, minimum 5, 0 = off).
+2. The list SHALL be rebuilt only when the set of open projects changed, preserving highlighted rows, checks and scroll position.

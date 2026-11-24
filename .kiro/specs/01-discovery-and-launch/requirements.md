@@ -2,7 +2,7 @@
 
 ## Introduction
 
-A launcher that finds recently active project folders and opens them as workspaces in a single Windows Terminal window: a Claude Code tab and a PowerShell tab per project. Generalizes a hand-built, single-project launcher.
+A launcher that finds recently active project folders and opens them as workspaces, each project in its own Windows Terminal window: a Claude Code tab and a PowerShell tab per project. Generalizes a hand-built, single-project launcher.
 
 ## Requirements
 
@@ -21,16 +21,16 @@ A launcher that finds recently active project folders and opens them as workspac
 3. WHEN scanning files THEN the system SHALL skip configured noise directories and SHALL stop after a maximum file count and directory depth.
 4. The system SHALL order projects newest first.
 
-### R3. Open one window with per-project tabs
-**User story:** As a developer, I want all selected projects open in one terminal window with no manual `cd`.
+### R3. Open a window per project with its tabs
+**User story:** As a developer, I want each selected project open in its own terminal window with no manual `cd`.
 
-1. WHEN projects are launched THEN the system SHALL invoke `wt.exe` once, producing one window.
+1. WHEN projects are launched THEN the system SHALL invoke `wt.exe` once per project (`-w new`), producing one window each (see R9).
 2. FOR each project the system SHALL create a Claude Code tab titled `cc:<project>`, starting in the project directory.
 3. WHEN a project has Claude session history (`~\.claude\projects\<path-encoded>`) AND fresh mode is not requested THEN the Claude tab SHALL run `claude --continue`; otherwise `claude`.
-4. WHEN the shell tab is enabled (default) THEN the system SHALL create a PowerShell tab titled `sh:<project>` in the project directory. Preset extra tabs SHALL be titled `shell-<title>`.
+4. WHEN the shell tab is enabled (default) THEN the system SHALL create a PowerShell tab titled `sh:<project>` in the project directory. Preset extra tabs SHALL be titled `sh:<title>`.
 5. WHEN the project is a git repository AND diff is enabled (default) THEN the shell tab SHALL run `git status -sb` and `git diff --stat` on open.
 6. WHEN tab colors are enabled (default) THEN all tabs of a project SHALL share a color derived deterministically from the project name.
-7. WHEN launching into a new window THEN the system SHALL finish by focusing the first tab.
+7. WHEN launching into a new window THEN each window SHALL finish by focusing its first tab.
 8. WHEN `-Window <id>` is given THEN the system SHALL add tabs to that window and SHALL NOT emit `focus-tab`.
 
 ### R4. Robust `wt` command construction

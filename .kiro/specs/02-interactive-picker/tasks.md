@@ -28,6 +28,7 @@
 - [x] 8. Help links (R9): LinkLabel to repo, issues and new-issue page
 
 - [x] 9. Remote links (R10): `ConvertTo-RemoteWebUrl` + remote lookup in `Get-GitInfo`, Remote column with link styling, click-to-open, `remoteUrl` in `-List`
+- [x] 10. Remote column for any git host (R10); background refresh via `refreshSeconds` (R11)
 
 ## Not done / ideas
 
@@ -38,5 +39,3 @@
 - [ ] Hands-on UI test pass (only dry-run verified so far)
 - [ ] Column sorting by click, keyboard shortcut for pin
 - [ ] Remember window size and position
-
-

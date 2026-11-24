@@ -12,5 +12,6 @@
   "tabColors": true,
   "gitInfo": true,
   "keepOpen": true,
+  "refreshSeconds": 60,
   "claudeArgs": ""
 }

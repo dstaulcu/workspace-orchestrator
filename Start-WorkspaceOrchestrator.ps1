@@ -1,7 +1,8 @@
 <#
 .SYNOPSIS
     Scans a code root for projects (newest activity first), lets you pick some, and opens
-    ONE Windows Terminal window with, per project, a Claude Code tab and a PowerShell tab.
+    a Windows Terminal window per project, each with a Claude Code tab and a PowerShell tab.
+    Projects that are already open are brought to the front instead of being opened twice.
 
 .DESCRIPTION
     Interactive (default): WinForms picker with filter, pinning (star), pre-checked last
@@ -56,7 +57,7 @@ $cfg = @{
     root = 'C:\code'; top = 0; ignore = @()
     noiseDirs = @('.git','node_modules','.venv','venv','__pycache__','dist','build','.next','bin','obj','.idea','.vscode')
     maxScanFiles = 5000; maxScanDepth = 6; picker = 'Forms'
-    shell = $true; diff = $true; tabColors = $true; gitInfo = $true; claudeArgs = ''; keepOpen = $true
+    shell = $true; diff = $true; tabColors = $true; gitInfo = $true; claudeArgs = ''; keepOpen = $true; refreshSeconds = 60
 }
 # Settings live outside the repo so they survive updates; files from older versions are moved over once.
 $ConfigDir = Join-Path $env:USERPROFILE '.config\workspace_picker'
@@ -267,7 +268,7 @@ function New-TabClause([string]$Title, [string]$Dir, [string]$Command, [string]$
 # list of open projects comes from $GetRunning (all scriptblocks defined in the main script,
 # because WinForms handlers are closures that can't see script-scope state or functions).
 function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [bool]$InitialFresh,
-                          [bool]$KeepOpen, [scriptblock]$OnLaunch, [scriptblock]$OnSwitch, [scriptblock]$GetRunning) {
+                          [bool]$KeepOpen, [scriptblock]$OnLaunch, [scriptblock]$OnSwitch, [scriptblock]$GetRunning, [int]$RefreshSeconds = 0) {
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
     [System.Windows.Forms.Application]::EnableVisualStyles()
@@ -278,6 +279,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
         Running = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
         Clock   = [System.Diagnostics.Stopwatch]::StartNew()
         Remote  = @{}
+        Busy    = $false
         ConfigDir = $ConfigDir
         ConfigFile = Join-Path $ConfigDir 'config.json'
         ConfigExample = Join-Path $PSScriptRoot 'config.example.json'
@@ -464,6 +466,30 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
     $timer.Interval = 4000
     $timer.Add_Tick({ $timer.Stop(); & $refresh }.GetNewClosure())
 
+    # Background refresh: re-check open tabs every $RefreshSeconds seconds (0 = off). The list is only rebuilt
+    # when the set of open projects actually changed, so highlight, checks and scroll position aren't disturbed.
+    $bgTimer = New-Object System.Windows.Forms.Timer
+    if ($RefreshSeconds -gt 0) {
+        $bgTimer.Interval = [Math]::Max(5, $RefreshSeconds) * 1000
+        $bgTimer.Add_Tick({
+            if ($ctx.Busy -or -not $form.Visible) { return }
+            $ctx.Busy = $true
+            try {
+                $now = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+                foreach ($n in @(& $GetRunning)) { if ($n) { [void]$now.Add([string]$n) } }
+                if (-not $now.SetEquals($ctx.Running)) {
+                    $top = $null; if ($lv.TopItem) { $top = [string]$lv.TopItem.Tag }
+                    $ctx.Running.Clear(); foreach ($n in $now) { [void]$ctx.Running.Add($n) }
+                    & $fill
+                    if ($top) { foreach ($i in $lv.Items) { if ([string]$i.Tag -eq $top) { $lv.TopItem = $i; break } } }
+                    $status.Text = 'Open projects updated: {0} open.' -f $ctx.Running.Count
+                }
+                $ctx.Clock.Restart()
+            } catch { } finally { $ctx.Busy = $false }
+        }.GetNewClosure())
+        $bgTimer.Start()
+    }
+
     $lv.Add_ItemChecked({
         param($s, $e)
         if ($ctx.Rebuilding) { return }
@@ -529,7 +555,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
         $filterBox.Focus(); & $refresh
     }.GetNewClosure())
     [void]$form.ShowDialog()
-    $timer.Dispose()
+    $timer.Dispose(); $bgTimer.Dispose()
     [pscustomobject]@{ Pinned = @($ctx.Pinned) }
 }
 
@@ -691,7 +717,7 @@ if ($All) {
     }
     $onSwitch  = { param($name) Switch-ToProject $name }
     $getRunning = { Get-RunningNames }
-    $res = Show-FormsPicker $rows $Filter @($state.last) ([bool]$Fresh) ([bool]$cfg.keepOpen) $onLaunch $onSwitch $getRunning
+    $res = Show-FormsPicker $rows $Filter @($state.last) ([bool]$Fresh) ([bool]$cfg.keepOpen) $onLaunch $onSwitch $getRunning ([int]$cfg.refreshSeconds)
     $state.pinned = @($res.Pinned)
     if (-not $DryRun) { Save-State }
 }
