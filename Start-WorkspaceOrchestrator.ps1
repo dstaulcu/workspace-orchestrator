@@ -331,6 +331,17 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
     $form.AcceptButton = $btnGo; $form.CancelButton = $btnClose
     $form.Controls.AddRange(@($lbl, $filterBox, $hint, $lv, $status, $chkFresh, $chkKeep, $btnRefresh, $btnPin, $btnSwitch, $btnGo, $btnClose))
 
+    $ctrlTip = New-Object System.Windows.Forms.ToolTip
+    $ctrlTip.InitialDelay = 400; $ctrlTip.AutoPopDelay = 12000
+    $ctrlTip.SetToolTip($filterBox, 'Type to narrow the list by project name or path. Checked projects stay checked while you filter.')
+    $ctrlTip.SetToolTip($chkFresh, 'Start plain "claude" instead of "claude --continue", even for projects with earlier sessions.')
+    $ctrlTip.SetToolTip($chkKeep, 'Leave this picker open after launching so you can launch more or Switch to open workspaces. Untick to close after Launch.')
+    $ctrlTip.SetToolTip($btnRefresh, 'Re-check which projects have tabs open in Windows Terminal (also happens when you return to this window).')
+    $ctrlTip.SetToolTip($btnPin, 'Pin or unpin the highlighted projects. Pinned projects (star) stay at the top of the list and are remembered.')
+    $ctrlTip.SetToolTip($btnSwitch, 'Bring the highlighted project''s open tab and its terminal window to the foreground. Works for projects marked open.')
+    $ctrlTip.SetToolTip($btnGo, 'Open the checked projects (or the highlighted one) in one new Windows Terminal window: a Claude Code tab and a shell tab each.')
+    $ctrlTip.SetToolTip($btnClose, 'Close the picker without launching anything.')
+
     $green = [System.Drawing.Color]::FromArgb(222, 245, 226)
 
     # Rebuild the list: pinned first, then recency; keeps checked + highlighted rows.
