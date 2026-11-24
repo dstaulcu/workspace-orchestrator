@@ -93,6 +93,7 @@ flowchart TB
 | Keep favorites at the top | **Pin** in the picker |
 | Re-open yesterday's set | Last selection is pre-checked |
 | Find an already-open workspace among many terminal windows | Keep the picker open; **Switch** raises the right tab and window |
+| Jump from a project to its GitHub repo | Click the **GitHub** column (owner/repo) in the picker |
 | Know at a glance which repo has uncommitted work | Branch + dirty/clean columns; shell tab shows `git status` and a diff summary on open |
 | Tell projects apart in the tab strip | Stable per-project tab colors |
 | Resume a Claude conversation automatically | `--continue` is used only when a prior session exists |
@@ -239,4 +240,5 @@ macOS/Linux terminals (tmux, iTerm), other agent CLIs, saved named "sets" of pro
 ## License
 
 [MIT](LICENSE)
+
 

@@ -27,6 +27,8 @@
 
 - [x] 8. Help links (R9): LinkLabel to repo, issues and new-issue page
 
+- [x] 9. GitHub links (R10): `ConvertTo-GitHubUrl` + remote lookup in `Get-GitInfo`, GitHub column with link styling, click-to-open, `githubUrl` in `-List`
+
 ## Not done / ideas
 
 - [ ] Hover-test the tooltips by hand (only load-tested)
@@ -36,4 +38,5 @@
 - [ ] Hands-on UI test pass (only dry-run verified so far)
 - [ ] Column sorting by click, keyboard shortcut for pin
 - [ ] Remember window size and position
+
 

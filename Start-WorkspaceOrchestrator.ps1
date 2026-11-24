@@ -139,14 +139,29 @@ function Test-ClaudeHistory([string]$Dir) {
     return (Test-Path -LiteralPath (Join-Path $env:USERPROFILE ".claude\projects\$enc"))
 }
 
+# Normalize a git remote (https, ssh, scp-style) to https://github.com/<owner>/<repo>; $null for non-GitHub remotes.
+function ConvertTo-GitHubUrl([string]$Remote) {
+    if ($Remote -match '^\s*(?:git@|ssh://git@|git://|https?://(?:[^@/]+@)?)github\.com[:/]+([^/\s]+)/([^/\s]+?)(?:\.git)?/?\s*$') {
+        return "https://github.com/$($Matches[1])/$($Matches[2])"
+    }
+    return $null
+}
+
 function Get-GitInfo([string]$Dir) {
     if (-not (Test-Path -LiteralPath (Join-Path $Dir '.git'))) { return $null }
-    $branch = ''; $dirty = $null
+    $branch = ''; $dirty = $null; $url = $null
     try {
         $branch = [string](& git -C $Dir branch --show-current 2>$null)
         $dirty = [bool](& git -C $Dir status --porcelain 2>$null | Select-Object -First 1)
+        # Prefer "origin"; otherwise the first remote that points at GitHub.
+        $remotes = @(& git -C $Dir remote 2>$null)
+        $ordered = @($remotes | Where-Object { $_ -eq 'origin' }) + @($remotes | Where-Object { $_ -ne 'origin' })
+        foreach ($rn in $ordered) {
+            $u = ConvertTo-GitHubUrl ([string](& git -C $Dir remote get-url $rn 2>$null))
+            if ($u) { $url = $u; break }
+        }
     } catch { }
-    [pscustomobject]@{ Branch = $branch; Dirty = $dirty }
+    [pscustomobject]@{ Branch = $branch; Dirty = $dirty; RemoteUrl = $url }
 }
 
 # Pinned projects first, then newest-first (input is already newest-first).
@@ -251,7 +266,9 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
         Checked = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
         Running = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
         Clock   = [System.Diagnostics.Stopwatch]::StartNew()
+        Remote  = @{}
     }
+    foreach ($r in $Rows) { if ($r.RemoteUrl) { $ctx.Remote[$r.Path] = $r.RemoteUrl } }
     foreach ($p in $state.pinned) { [void]$ctx.Pinned.Add($p) }
     foreach ($p in $Preselect)    { [void]$ctx.Checked.Add($p) }
 
@@ -271,7 +288,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
     $lv.View = 'Details'; $lv.CheckBoxes = $true; $lv.FullRowSelect = $true; $lv.GridLines = $true; $lv.HideSelection = $false
     $lv.Location = New-Object System.Drawing.Point(12, 44); $lv.Size = New-Object System.Drawing.Size(1016, 500)
     $lv.Anchor = 'Top,Bottom,Left,Right'
-    foreach ($col in @(@('Project', 230), @('Open', 50), @('Last active', 90), @('When', 130), @('Branch', 130), @('State', 60), @('Path', 320))) {
+    foreach ($col in @(@('Project', 230), @('Open', 50), @('Last active', 90), @('When', 130), @('Branch', 130), @('State', 60), @('GitHub', 170), @('Path', 160))) {
         [void]$lv.Columns.Add($col[0], $col[1])
     }
 
@@ -283,6 +300,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
         "When: exact date and time of that last activity.",
         "Branch: the current git branch (blank if not a git repo).",
         "State: 'dirty' = uncommitted changes (modified, staged or untracked files); 'clean' = nothing to commit;`nblank = not a git repo. Does not show unpushed commits.",
+        "GitHub: owner/repo of the project's GitHub remote (origin preferred). Click it to open the repository in your browser.`nBlank if the project has no GitHub remote.",
         "Path: full folder path of the project."
     )
     $tip = New-Object System.Windows.Forms.ToolTip
@@ -302,6 +320,20 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
         if ($col -ne $ctx.TipCol) {
             $ctx.TipCol = $col
             if ($col -ge 0) { $tip.Show($colHelp[$col], $lv, $e.X + 12, $headerH + 6, 12000) } else { $tip.Hide($lv) }
+        }
+        # Hand cursor over a clickable GitHub link cell.
+        $hit = $lv.HitTest($e.X, $e.Y)
+        $overLink = $false
+        if ($hit.Item -and $hit.SubItem -and $hit.Item.SubItems.IndexOf($hit.SubItem) -eq 6 -and $ctx.Remote.ContainsKey([string]$hit.Item.Tag)) { $overLink = $true }
+        if ($overLink) { $lv.Cursor = [System.Windows.Forms.Cursors]::Hand } else { $lv.Cursor = [System.Windows.Forms.Cursors]::Default }
+    }.GetNewClosure())
+    # Clicking a GitHub cell opens that repository.
+    $lv.Add_MouseClick({
+        param($s, $e)
+        $hit = $lv.HitTest($e.X, $e.Y)
+        if ($hit.Item -and $hit.SubItem -and $hit.Item.SubItems.IndexOf($hit.SubItem) -eq 6) {
+            $url = $ctx.Remote[[string]$hit.Item.Tag]
+            if ($url) { try { Start-Process $url } catch { $status.Text = "Could not open $url" } }
         }
     }.GetNewClosure())
     $lv.Add_MouseLeave({ $ctx.TipCol = -1; $tip.Hide($lv) }.GetNewClosure())
@@ -375,9 +407,19 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
             $st = ''
             if ($r.Dirty -eq $true) { $st = 'dirty' } elseif ($r.Dirty -eq $false) { $st = 'clean' }
             [void]$it.SubItems.Add($open); [void]$it.SubItems.Add($r.Relative); [void]$it.SubItems.Add($r.LastActive)
-            [void]$it.SubItems.Add([string]$r.Branch); [void]$it.SubItems.Add($st); [void]$it.SubItems.Add($r.Path)
+            $gh = ''
+            if ($r.RemoteUrl) { $gh = $r.RemoteUrl -replace '^https://github\.com/', '' }
+            [void]$it.SubItems.Add([string]$r.Branch); [void]$it.SubItems.Add($st); [void]$it.SubItems.Add($gh); [void]$it.SubItems.Add($r.Path)
             $it.Tag = $r.Path
-            if ($isOpen) { $it.BackColor = $green }
+            # Per-cell styling so the GitHub cell can look like a link; the green "open" tint is applied to every cell.
+            $it.UseItemStyleForSubItems = $false
+            $bg = [System.Drawing.SystemColors]::Window
+            if ($isOpen) { $bg = $green }
+            foreach ($sub in $it.SubItems) { $sub.BackColor = $bg }
+            if ($gh) {
+                $it.SubItems[6].ForeColor = [System.Drawing.Color]::FromArgb(0, 102, 204)
+                $it.SubItems[6].Font = New-Object System.Drawing.Font($lv.Font, [System.Drawing.FontStyle]::Underline)
+            }
             $it.Checked = $ctx.Checked.Contains($r.Path)
             [void]$lv.Items.Add($it)
             if ($sel -contains $r.Path) { $it.Selected = $true }
@@ -531,6 +573,7 @@ function New-Row($d, [bool]$Scan, [bool]$Git) {
         Relative   = $(if ($la) { Format-Relative $la } else { '' })
         LastActive = $(if ($la) { $la.ToString('yyyy-MM-dd HH:mm') } else { '' })
         IsGit = $hasGit
+        RemoteUrl = $(if ($gi) { $gi.RemoteUrl } else { $null })
         Branch = $(if ($gi) { $gi.Branch } else { $null })
         Dirty  = $(if ($gi) { $gi.Dirty } else { $null })
         Pinned = ($state.pinned -contains $d.FullName)
@@ -566,7 +609,7 @@ if ($List) {
         [pscustomobject]@{
             name = $_.Name; path = $_.Path
             lastActive = $(if ($_.LastActiveDt) { $_.LastActiveDt.ToString('o') } else { $null })
-            pinned = $_.Pinned; isGit = $_.IsGit; branch = $_.Branch; dirty = $_.Dirty
+            pinned = $_.Pinned; isGit = $_.IsGit; branch = $_.Branch; dirty = $_.Dirty; githubUrl = $_.RemoteUrl
             running = [bool]($running | Where-Object { $_ -ieq $n })
             hasClaudeHistory = $_.HasHistory; hasPreset = $_.HasPreset
         } })

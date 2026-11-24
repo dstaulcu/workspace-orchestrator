@@ -10,7 +10,7 @@ When run without selection arguments, the launcher shows a picker so the user ca
 **User story:** As a developer, I want to see all my projects, newest first, and select several.
 
 1. WHEN no `-Project`, `-All` or `-List` is given THEN the system SHALL show a picker listing every project (unless `-Top N` limits it).
-2. The picker SHALL show name, relative time, absolute time, git branch, clean/dirty state and path.
+2. The picker SHALL show name, relative time, absolute time, git branch, clean/dirty state, GitHub repository and path.
 2a. WHEN the mouse hovers a column header THEN the picker SHALL show a tooltip explaining that column (Project, Open, Last active, When, Branch, State, Path). Buttons, checkboxes and the filter box SHALL likewise have hover tooltips.
 3. WHEN the user cancels or closes the picker THEN the system SHALL launch nothing.
 4. WHEN the user clicks Launch with nothing checked but rows highlighted THEN the highlighted rows SHALL be used; with neither, the picker SHALL stay open.
@@ -46,7 +46,13 @@ When run without selection arguments, the launcher shows a picker so the user ca
 ### R9. Help links
 1. The picker SHALL show a Help area with links to the GitHub repository, its issues list, and the new-issue page; clicking a link SHALL open it in the default browser.
 
+### R10. GitHub links
+1. WHEN a project has a GitHub remote (origin preferred, else the first remote on github.com; https, ssh and scp-style URLs) THEN the picker SHALL show `owner/repo` in a GitHub column styled as a link.
+2. WHEN the user clicks that cell THEN the system SHALL open the repository's https URL in the default browser; the cursor SHALL be a hand over such cells.
+3. Projects without a GitHub remote SHALL have a blank cell. -List SHALL report `githubUrl` (or null).
+
 ### R7. Non-destructive
 1. A `-DryRun` through the picker SHALL NOT save last-selection (pins are still saved only when not a dry run).
+
 
 
