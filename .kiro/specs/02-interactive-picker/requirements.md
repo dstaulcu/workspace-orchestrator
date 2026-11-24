@@ -10,7 +10,7 @@ When run without selection arguments, the launcher shows a picker so the user ca
 **User story:** As a developer, I want to see all my projects, newest first, and select several.
 
 1. WHEN no `-Project`, `-All` or `-List` is given THEN the system SHALL show a picker listing every project (unless `-Top N` limits it).
-2. The picker SHALL show name, relative time, absolute time, git branch, clean/dirty state, GitHub repository and path.
+2. The picker SHALL show, in order: name, open indicator, relative time, absolute time, path, then the git-only columns (branch, clean/dirty state, GitHub repository), so projects that are not repos still read cleanly.
 2a. WHEN the mouse hovers a column header THEN the picker SHALL show a tooltip explaining that column (Project, Open, Last active, When, Branch, State, Path). Buttons, checkboxes and the filter box SHALL likewise have hover tooltips.
 3. WHEN the user cancels or closes the picker THEN the system SHALL launch nothing.
 4. WHEN the user clicks Launch with nothing checked but rows highlighted THEN the highlighted rows SHALL be used; with neither, the picker SHALL stay open.
@@ -53,6 +53,7 @@ When run without selection arguments, the launcher shows a picker so the user ca
 
 ### R7. Non-destructive
 1. A `-DryRun` through the picker SHALL NOT save last-selection (pins are still saved only when not a dry run).
+
 
 
 

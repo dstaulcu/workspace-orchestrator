@@ -288,7 +288,10 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
     $lv.View = 'Details'; $lv.CheckBoxes = $true; $lv.FullRowSelect = $true; $lv.GridLines = $true; $lv.HideSelection = $false
     $lv.Location = New-Object System.Drawing.Point(12, 44); $lv.Size = New-Object System.Drawing.Size(1016, 500)
     $lv.Anchor = 'Top,Bottom,Left,Right'
-    foreach ($col in @(@('Project', 230), @('Open', 50), @('Last active', 90), @('When', 130), @('Branch', 130), @('State', 60), @('GitHub', 170), @('Path', 160))) {
+    # Path comes before the git-only columns (Branch, State, GitHub) because not every project is a repo.
+    # The GitHub link column index is stored in $ctx.GhCol (set with $colHelp below); keep it, $colHelp and the
+    # SubItems.Add order in the list fill in sync if you reorder.
+    foreach ($col in @(@('Project', 200), @('Open', 45), @('Last active', 85), @('When', 115), @('Path', 230), @('Branch', 110), @('State', 55), @('GitHub', 160))) {
         [void]$lv.Columns.Add($col[0], $col[1])
     }
 
@@ -298,11 +301,12 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
         "Open: $([char]0x25CF) means a claude-code-<project> or shell-<project> tab is open in some Windows Terminal window.`nHighlight the row and click Switch to bring it forward.",
         "Last active: how long ago the project's latest git commit was`n(or its newest file change if it isn't a git repo).",
         "When: exact date and time of that last activity.",
+        "Path: full folder path of the project.",
         "Branch: the current git branch (blank if not a git repo).",
         "State: 'dirty' = uncommitted changes (modified, staged or untracked files); 'clean' = nothing to commit;`nblank = not a git repo. Does not show unpushed commits.",
-        "GitHub: owner/repo of the project's GitHub remote (origin preferred). Click it to open the repository in your browser.`nBlank if the project has no GitHub remote.",
-        "Path: full folder path of the project."
+        "GitHub: owner/repo of the project's GitHub remote (origin preferred). Click it to open the repository in your browser.`nBlank if the project has no GitHub remote."
     )
+    $ctx.GhCol = 7
     $tip = New-Object System.Windows.Forms.ToolTip
     $ctx.TipCol = -1
     $lv.Add_MouseMove({
@@ -324,14 +328,14 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
         # Hand cursor over a clickable GitHub link cell.
         $hit = $lv.HitTest($e.X, $e.Y)
         $overLink = $false
-        if ($hit.Item -and $hit.SubItem -and $hit.Item.SubItems.IndexOf($hit.SubItem) -eq 6 -and $ctx.Remote.ContainsKey([string]$hit.Item.Tag)) { $overLink = $true }
+        if ($hit.Item -and $hit.SubItem -and $hit.Item.SubItems.IndexOf($hit.SubItem) -eq $ctx.GhCol -and $ctx.Remote.ContainsKey([string]$hit.Item.Tag)) { $overLink = $true }
         if ($overLink) { $lv.Cursor = [System.Windows.Forms.Cursors]::Hand } else { $lv.Cursor = [System.Windows.Forms.Cursors]::Default }
     }.GetNewClosure())
     # Clicking a GitHub cell opens that repository.
     $lv.Add_MouseClick({
         param($s, $e)
         $hit = $lv.HitTest($e.X, $e.Y)
-        if ($hit.Item -and $hit.SubItem -and $hit.Item.SubItems.IndexOf($hit.SubItem) -eq 6) {
+        if ($hit.Item -and $hit.SubItem -and $hit.Item.SubItems.IndexOf($hit.SubItem) -eq $ctx.GhCol) {
             $url = $ctx.Remote[[string]$hit.Item.Tag]
             if ($url) { try { Start-Process $url } catch { $status.Text = "Could not open $url" } }
         }
@@ -409,7 +413,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
             [void]$it.SubItems.Add($open); [void]$it.SubItems.Add($r.Relative); [void]$it.SubItems.Add($r.LastActive)
             $gh = ''
             if ($r.RemoteUrl) { $gh = $r.RemoteUrl -replace '^https://github\.com/', '' }
-            [void]$it.SubItems.Add([string]$r.Branch); [void]$it.SubItems.Add($st); [void]$it.SubItems.Add($gh); [void]$it.SubItems.Add($r.Path)
+            [void]$it.SubItems.Add($r.Path); [void]$it.SubItems.Add([string]$r.Branch); [void]$it.SubItems.Add($st); [void]$it.SubItems.Add($gh)
             $it.Tag = $r.Path
             # Per-cell styling so the GitHub cell can look like a link; the green "open" tint is applied to every cell.
             $it.UseItemStyleForSubItems = $false
@@ -417,8 +421,8 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
             if ($isOpen) { $bg = $green }
             foreach ($sub in $it.SubItems) { $sub.BackColor = $bg }
             if ($gh) {
-                $it.SubItems[6].ForeColor = [System.Drawing.Color]::FromArgb(0, 102, 204)
-                $it.SubItems[6].Font = New-Object System.Drawing.Font($lv.Font, [System.Drawing.FontStyle]::Underline)
+                $it.SubItems[$ctx.GhCol].ForeColor = [System.Drawing.Color]::FromArgb(0, 102, 204)
+                $it.SubItems[$ctx.GhCol].Font =New-Object System.Drawing.Font($lv.Font, [System.Drawing.FontStyle]::Underline)
             }
             $it.Checked = $ctx.Checked.Contains($r.Path)
             [void]$lv.Items.Add($it)
