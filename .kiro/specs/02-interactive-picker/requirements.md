@@ -43,6 +43,10 @@ When run without selection arguments, the launcher shows a picker so the user ca
 5. IF no matching tab exists THEN the picker SHALL say so and leave the list unchanged.
 6. IF UI Automation is unavailable THEN no project SHALL be shown as open and launching SHALL still work.
 
+### R9. Help links
+1. The picker SHALL show a Help area with links to the GitHub repository, its issues list, and the new-issue page; clicking a link SHALL open it in the default browser.
+
 ### R7. Non-destructive
 1. A `-DryRun` through the picker SHALL NOT save last-selection (pins are still saved only when not a dry run).
+
 

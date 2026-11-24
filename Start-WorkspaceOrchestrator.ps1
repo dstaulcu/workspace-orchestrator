@@ -309,6 +309,19 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
     $status = New-Object System.Windows.Forms.Label
     $status.Text = ''; $status.AutoSize = $true; $status.Location = New-Object System.Drawing.Point(12, 552); $status.Anchor = 'Bottom,Left'
 
+    # Help area: links back to the GitHub repo and its issue pages.
+    $repoUrl = 'https://github.com/dstaulcu/workspace-orchestrator'
+    $help = New-Object System.Windows.Forms.LinkLabel
+    $help.Text = 'Help:  Repository  |  Open issues  |  Report a bug or request a feature'
+    $help.AutoSize = $true; $help.Location = New-Object System.Drawing.Point(560, 552); $help.Anchor = 'Bottom,Right'
+    foreach ($l in @(@('Repository', $repoUrl), @('Open issues', "$repoUrl/issues"), @('Report a bug or request a feature', "$repoUrl/issues/new/choose"))) {
+        [void]$help.Links.Add($help.Text.IndexOf($l[0]), $l[0].Length, $l[1])
+    }
+    $help.Add_LinkClicked({
+        param($s, $e)
+        try { Start-Process ([string]$e.Link.LinkData) } catch { $status.Text = "Could not open $($e.Link.LinkData)" }
+    }.GetNewClosure())
+
     $chkFresh = New-Object System.Windows.Forms.CheckBox
     $chkFresh.Text = 'Fresh sessions (no --continue)'; $chkFresh.Checked = $InitialFresh; $chkFresh.AutoSize = $true
     $chkFresh.Location = New-Object System.Drawing.Point(12, 584); $chkFresh.Anchor = 'Bottom,Left'
@@ -329,7 +342,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
     $btnClose   = New-Btn 'Close' 920
     $btnClose.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
     $form.AcceptButton = $btnGo; $form.CancelButton = $btnClose
-    $form.Controls.AddRange(@($lbl, $filterBox, $hint, $lv, $status, $chkFresh, $chkKeep, $btnRefresh, $btnPin, $btnSwitch, $btnGo, $btnClose))
+    $form.Controls.AddRange(@($lbl, $filterBox, $hint, $lv, $status, $help, $chkFresh, $chkKeep, $btnRefresh, $btnPin, $btnSwitch, $btnGo, $btnClose))
 
     $ctrlTip = New-Object System.Windows.Forms.ToolTip
     $ctrlTip.InitialDelay = 400; $ctrlTip.AutoPopDelay = 12000

@@ -139,6 +139,8 @@ flowchart LR
     P -- "Launch" --> N["Open new tabs"]
 ```
 
+The bottom-right **Help** line links to this repository, its open issues, and the new-issue page, so bugs and ideas are one click away.
+
 This works because every tab has a predictable title: `claude-code-<project>` for the Claude tab and `shell-<scope>` for the others. If you rename a tab or a program overrides its title, that tab won't be found.
 
 Prefer a plain list? `-Picker Grid` uses PowerShell's `Out-GridView`.
@@ -237,3 +239,4 @@ macOS/Linux terminals (tmux, iTerm), other agent CLIs, saved named "sets" of pro
 ## License
 
 [MIT](LICENSE)
+

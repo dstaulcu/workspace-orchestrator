@@ -25,6 +25,8 @@
 
 - [x] 7. Column header tooltips (R1.2a): ListView headers have no native tooltips, so `MouseMove` hit-tests the header strip and shows a `ToolTip` per column
 
+- [x] 8. Help links (R9): LinkLabel to repo, issues and new-issue page
+
 ## Not done / ideas
 
 - [ ] Hover-test the tooltips by hand (only load-tested)
@@ -34,3 +36,4 @@
 - [ ] Hands-on UI test pass (only dry-run verified so far)
 - [ ] Column sorting by click, keyboard shortcut for pin
 - [ ] Remember window size and position
+
