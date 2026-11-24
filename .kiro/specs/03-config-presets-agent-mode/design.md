@@ -61,6 +61,7 @@ The `-Project` fast path avoids the activity scan, so an agent that already know
     "isGit": true,
     "branch": "main",
     "dirty": true,
+    "running": false,
     "hasClaudeHistory": true,
     "hasPreset": false
   }

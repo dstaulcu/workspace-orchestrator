@@ -28,6 +28,7 @@
 .PARAMETER NoShell    Skip the PowerShell tab.
 .PARAMETER NoDiff     Don't run `git status -sb; git diff --stat` in the shell tab.
 .PARAMETER NoColor    Don't set tab colors.
+.PARAMETER Focus      Bring an already-open project's tab (and its window) to the foreground; exit 1 if none is open.
 .PARAMETER Window     Value for wt's -w (e.g. 0 = most recent existing window). Default: wt's own behavior.
 .PARAMETER DryRun     Print the wt arguments instead of launching.
 #>
@@ -46,6 +47,7 @@ param(
     [switch]$NoDiff,
     [switch]$NoColor,
     [string]$Window,
+    [string]$Focus,
     [switch]$DryRun
 )
 
@@ -54,7 +56,7 @@ $cfg = @{
     root = 'C:\code'; top = 0; ignore = @('workspace_orchestrator')
     noiseDirs = @('.git','node_modules','.venv','venv','__pycache__','dist','build','.next','bin','obj','.idea','.vscode')
     maxScanFiles = 5000; maxScanDepth = 6; picker = 'Forms'
-    shell = $true; diff = $true; tabColors = $true; gitInfo = $true; claudeArgs = ''
+    shell = $true; diff = $true; tabColors = $true; gitInfo = $true; claudeArgs = ''; keepOpen = $true
 }
 $cfgFile = Join-Path $PSScriptRoot 'config.json'
 if (Test-Path -LiteralPath $cfgFile) {
@@ -169,6 +171,54 @@ function Get-TabColor([string]$Name) {
     '#{0:X2}{1:X2}{2:X2}' -f [int](($r + $m) * 255), [int](($g + $m) * 255), [int](($b + $m) * 255)
 }
 
+# ---------------------------------------------------------------- find / focus open tabs (UI Automation)
+# Tab titles are unique and predictable (claude-code-<project>, shell-<scope>), so we can find
+# them in ANY Windows Terminal window, select the tab, and raise its window. No tab indexes.
+function Get-TerminalTabs {
+    try {
+        Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes -ErrorAction Stop
+        $AE = [System.Windows.Automation.AutomationElement]
+        $winCond = New-Object System.Windows.Automation.PropertyCondition($AE::ClassNameProperty, 'CASCADIA_HOSTING_WINDOW_CLASS')
+        $tabCond = New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::TabItem)
+        foreach ($w in $AE::RootElement.FindAll('Children', $winCond)) {
+            foreach ($t in $w.FindAll('Descendants', $tabCond)) {
+                [pscustomobject]@{ Title = $t.Current.Name; Window = $w; Tab = $t }
+            }
+        }
+    } catch { Write-Verbose "UI Automation unavailable: $_" }
+}
+
+# Project names that currently have a claude-code-<name> or shell-<name> tab open.
+function Get-RunningNames {
+    @(Get-TerminalTabs | ForEach-Object { if ($_.Title -match '^(claude-code|shell)-(.+)$') { $Matches[2] } } | Select-Object -Unique)
+}
+
+# Select the project's harness tab (else its shell tab) and raise the window. Returns $true if found.
+function Switch-ToProject([string]$Name) {
+    if (-not ('WoWin' -as [type])) {
+        Add-Type @'
+using System; using System.Runtime.InteropServices;
+public static class WoWin {
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
+  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+  [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
+}
+'@
+    }
+    $tabs = @(Get-TerminalTabs)
+    $hit = $tabs | Where-Object { $_.Title -ieq "claude-code-$Name" } | Select-Object -First 1
+    if (-not $hit) { $hit = $tabs | Where-Object { $_.Title -ieq "shell-$Name" } | Select-Object -First 1 }
+    if (-not $hit) { return $false }
+    try { $hit.Tab.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select() } catch { }
+    $h = [IntPtr]$hit.Window.Current.NativeWindowHandle
+    if ([WoWin]::IsIconic($h)) { [void][WoWin]::ShowWindow($h, 9) }
+    # A tap of Alt lets SetForegroundWindow succeed when we aren't the foreground process (e.g. -Focus from a script).
+    [WoWin]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero); [WoWin]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)
+    [void][WoWin]::SetForegroundWindow($h)
+    return $true
+}
+
 # ---------------------------------------------------------------- wt command building
 # --- wt quoting rules (fragile!) ---
 # * The whole wt command line is ONE string, passed verbatim by Start-Process;
@@ -186,8 +236,12 @@ function New-TabClause([string]$Title, [string]$Dir, [string]$Command, [string]$
     "new-tab --title `"$Title`"$col --suppressApplicationTitle -d `"$Dir`" powershell.exe -NoExit -Command `"$inner`""
 }
 
-# ---------------------------------------------------------------- pickers
-function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [bool]$InitialFresh) {
+# ---------------------------------------------------------------- picker
+# Persistent picker: launches go through $OnLaunch, tab switching through $OnSwitch, and the
+# list of open projects comes from $GetRunning (all scriptblocks defined in the main script,
+# because WinForms handlers are closures that can't see script-scope state or functions).
+function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [bool]$InitialFresh,
+                          [bool]$KeepOpen, [scriptblock]$OnLaunch, [scriptblock]$OnSwitch, [scriptblock]$GetRunning) {
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
     [System.Windows.Forms.Application]::EnableVisualStyles()
@@ -195,49 +249,63 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
         Rebuilding = $false
         Pinned  = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
         Checked = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+        Running = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+        Clock   = [System.Diagnostics.Stopwatch]::StartNew()
     }
     foreach ($p in $state.pinned) { [void]$ctx.Pinned.Add($p) }
     foreach ($p in $Preselect)    { [void]$ctx.Checked.Add($p) }
 
     $form = New-Object System.Windows.Forms.Form
-    $form.Text = 'Workspace Picker'; $form.ClientSize = New-Object System.Drawing.Size(1040, 600)
-    $form.StartPosition = 'CenterScreen'; $form.TopMost = $true; $form.KeyPreview = $true
+    $form.Text = 'Workspace Picker'; $form.ClientSize = New-Object System.Drawing.Size(1040, 628)
+    $form.StartPosition = 'CenterScreen'; $form.KeyPreview = $true
 
     $lbl = New-Object System.Windows.Forms.Label
     $lbl.Text = 'Filter:'; $lbl.Location = New-Object System.Drawing.Point(12, 16); $lbl.AutoSize = $true
     $filterBox = New-Object System.Windows.Forms.TextBox
     $filterBox.Location = New-Object System.Drawing.Point(60, 12); $filterBox.Width = 320; $filterBox.Text = $InitialFilter
     $hint = New-Object System.Windows.Forms.Label
-    $hint.Text = 'Check projects, then Launch (Enter). Pin keeps a project at the top.'
+    $hint.Text = 'Check projects and Launch, or highlight an open (green) project and Switch to bring it forward.'
     $hint.Location = New-Object System.Drawing.Point(400, 16); $hint.AutoSize = $true
 
     $lv = New-Object System.Windows.Forms.ListView
     $lv.View = 'Details'; $lv.CheckBoxes = $true; $lv.FullRowSelect = $true; $lv.GridLines = $true; $lv.HideSelection = $false
     $lv.Location = New-Object System.Drawing.Point(12, 44); $lv.Size = New-Object System.Drawing.Size(1016, 500)
     $lv.Anchor = 'Top,Bottom,Left,Right'
-    foreach ($col in @(@('Project', 230), @('Last active', 90), @('When', 130), @('Branch', 130), @('State', 60), @('Path', 360))) {
+    foreach ($col in @(@('Project', 230), @('Open', 50), @('Last active', 90), @('When', 130), @('Branch', 130), @('State', 60), @('Path', 320))) {
         [void]$lv.Columns.Add($col[0], $col[1])
     }
 
+    $status = New-Object System.Windows.Forms.Label
+    $status.Text = ''; $status.AutoSize = $true; $status.Location = New-Object System.Drawing.Point(12, 552); $status.Anchor = 'Bottom,Left'
+
     $chkFresh = New-Object System.Windows.Forms.CheckBox
     $chkFresh.Text = 'Fresh sessions (no --continue)'; $chkFresh.Checked = $InitialFresh; $chkFresh.AutoSize = $true
-    $chkFresh.Location = New-Object System.Drawing.Point(12, 560); $chkFresh.Anchor = 'Bottom,Left'
-    $btnPin = New-Object System.Windows.Forms.Button
-    $btnPin.Text = 'Pin / Unpin'; $btnPin.Size = New-Object System.Drawing.Size(100, 28)
-    $btnPin.Location = New-Object System.Drawing.Point(600, 556); $btnPin.Anchor = 'Bottom,Right'
-    $btnGo = New-Object System.Windows.Forms.Button
-    $btnGo.Text = 'Launch'; $btnGo.Size = New-Object System.Drawing.Size(100, 28)
-    $btnGo.Location = New-Object System.Drawing.Point(810, 556); $btnGo.Anchor = 'Bottom,Right'
-    $btnCancel = New-Object System.Windows.Forms.Button
-    $btnCancel.Text = 'Cancel'; $btnCancel.Size = New-Object System.Drawing.Size(100, 28)
-    $btnCancel.Location = New-Object System.Drawing.Point(920, 556); $btnCancel.Anchor = 'Bottom,Right'
-    $btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
-    $form.AcceptButton = $btnGo; $form.CancelButton = $btnCancel
-    $form.Controls.AddRange(@($lbl, $filterBox, $hint, $lv, $chkFresh, $btnPin, $btnGo, $btnCancel))
+    $chkFresh.Location = New-Object System.Drawing.Point(12, 584); $chkFresh.Anchor = 'Bottom,Left'
+    $chkKeep = New-Object System.Windows.Forms.CheckBox
+    $chkKeep.Text = 'Keep open after launch'; $chkKeep.Checked = $KeepOpen; $chkKeep.AutoSize = $true
+    $chkKeep.Location = New-Object System.Drawing.Point(220, 584); $chkKeep.Anchor = 'Bottom,Left'
 
-    # Event handlers run in a closure, so share mutable state through $ctx only.
+    function New-Btn($text, $x, $isDefault) {
+        $b = New-Object System.Windows.Forms.Button
+        $b.Text = $text; $b.Size = New-Object System.Drawing.Size(100, 28)
+        $b.Location = New-Object System.Drawing.Point($x, 580); $b.Anchor = 'Bottom,Right'
+        $b
+    }
+    $btnRefresh = New-Btn 'Refresh' 480
+    $btnPin     = New-Btn 'Pin / Unpin' 590
+    $btnSwitch  = New-Btn 'Switch' 700
+    $btnGo      = New-Btn 'Launch' 810
+    $btnClose   = New-Btn 'Close' 920
+    $btnClose.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    $form.AcceptButton = $btnGo; $form.CancelButton = $btnClose
+    $form.Controls.AddRange(@($lbl, $filterBox, $hint, $lv, $status, $chkFresh, $chkKeep, $btnRefresh, $btnPin, $btnSwitch, $btnGo, $btnClose))
+
+    $green = [System.Drawing.Color]::FromArgb(222, 245, 226)
+
+    # Rebuild the list: pinned first, then recency; keeps checked + highlighted rows.
     $fill = {
         $ctx.Rebuilding = $true
+        $sel = @($lv.SelectedItems | ForEach-Object { [string]$_.Tag })
         $lv.BeginUpdate(); $lv.Items.Clear()
         $f = $filterBox.Text.Trim()
         $ordered = @($Rows | Where-Object { $ctx.Pinned.Contains($_.Path) }) + @($Rows | Where-Object { -not $ctx.Pinned.Contains($_.Path) })
@@ -246,17 +314,36 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
             $star = ''
             if ($ctx.Pinned.Contains($r.Path)) { $star = [string][char]0x2605 + ' ' }
             $it = New-Object System.Windows.Forms.ListViewItem(($star + $r.Name))
+            $open = ''
+            $isOpen = $ctx.Running.Contains($r.Name)
+            if ($isOpen) { $open = [string][char]0x25CF }
             $st = ''
             if ($r.Dirty -eq $true) { $st = 'dirty' } elseif ($r.Dirty -eq $false) { $st = 'clean' }
-            [void]$it.SubItems.Add($r.Relative); [void]$it.SubItems.Add($r.LastActive)
+            [void]$it.SubItems.Add($open); [void]$it.SubItems.Add($r.Relative); [void]$it.SubItems.Add($r.LastActive)
             [void]$it.SubItems.Add([string]$r.Branch); [void]$it.SubItems.Add($st); [void]$it.SubItems.Add($r.Path)
             $it.Tag = $r.Path
+            if ($isOpen) { $it.BackColor = $green }
             $it.Checked = $ctx.Checked.Contains($r.Path)
             [void]$lv.Items.Add($it)
+            if ($sel -contains $r.Path) { $it.Selected = $true }
         }
         $lv.EndUpdate()
         $ctx.Rebuilding = $false
     }.GetNewClosure()
+
+    # Ask Windows Terminal (via UI Automation) which projects have tabs open.
+    $refresh = {
+        $status.Text = 'Looking for open terminal tabs...'; $form.Update()
+        $ctx.Running.Clear()
+        foreach ($n in @(& $GetRunning)) { if ($n) { [void]$ctx.Running.Add([string]$n) } }
+        $ctx.Clock.Restart()
+        & $fill
+        $status.Text = '{0} open project(s) found.' -f $ctx.Running.Count
+    }.GetNewClosure()
+
+    $timer = New-Object System.Windows.Forms.Timer
+    $timer.Interval = 4000
+    $timer.Add_Tick({ $timer.Stop(); & $refresh }.GetNewClosure())
 
     $lv.Add_ItemChecked({
         param($s, $e)
@@ -264,26 +351,111 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
         if ($e.Item.Checked) { [void]$ctx.Checked.Add([string]$e.Item.Tag) } else { [void]$ctx.Checked.Remove([string]$e.Item.Tag) }
     }.GetNewClosure())
     $filterBox.Add_TextChanged({ & $fill }.GetNewClosure())
+    $btnRefresh.Add_Click({ & $refresh }.GetNewClosure())
     $btnPin.Add_Click({
         $paths = @($lv.SelectedItems | ForEach-Object { [string]$_.Tag })
         foreach ($p in $paths) { if ($ctx.Pinned.Contains($p)) { [void]$ctx.Pinned.Remove($p) } else { [void]$ctx.Pinned.Add($p) } }
         & $fill
     }.GetNewClosure())
+    $btnSwitch.Add_Click({
+        if ($lv.SelectedItems.Count -eq 0) { $status.Text = 'Highlight a project first, then Switch.'; return }
+        $path = [string]$lv.SelectedItems[0].Tag
+        $name = ($Rows | Where-Object { $_.Path -eq $path } | Select-Object -First 1).Name
+        if (& $OnSwitch $name) {
+            $status.Text = "Switched to $name."
+            if (-not $chkKeep.Checked) { $form.Close() }
+        } else {
+            $status.Text = "No open tab found for $name (use Launch to open it)."
+        }
+    }.GetNewClosure())
     $btnGo.Add_Click({
         if ($ctx.Checked.Count -eq 0) { foreach ($i in $lv.SelectedItems) { [void]$ctx.Checked.Add([string]$i.Tag) } }
-        if ($ctx.Checked.Count -eq 0) { return }   # nothing chosen: stay open
-        $form.DialogResult = [System.Windows.Forms.DialogResult]::OK
+        if ($ctx.Checked.Count -eq 0) { $status.Text = 'Check at least one project to launch.'; return }
+        $paths = @($ctx.Checked)
+        & $OnLaunch $paths $chkFresh.Checked @($ctx.Pinned)
+        if ($chkKeep.Checked) {
+            $ctx.Checked.Clear()
+            & $fill
+            $status.Text = 'Launched {0} project(s). Rechecking open tabs shortly...' -f $paths.Count
+            $timer.Stop(); $timer.Start()
+        } else {
+            $form.Close()
+        }
     }.GetNewClosure())
+    # Coming back to the picker (e.g. after switching away) re-checks which tabs are open.
+    $form.Add_Activated({ if ($ctx.Clock.ElapsedMilliseconds -gt 3000) { & $refresh } }.GetNewClosure())
 
     & $fill
-    $form.Add_Shown({ $form.Activate(); $filterBox.Focus() }.GetNewClosure())
-    $result = $form.ShowDialog()
-    [pscustomobject]@{
-        Launch = ($result -eq [System.Windows.Forms.DialogResult]::OK)
-        Paths  = @($ctx.Checked)
-        Pinned = @($ctx.Pinned)
-        Fresh  = $chkFresh.Checked
+    $form.Add_Shown({
+        $form.TopMost = $true; $form.Activate(); $form.TopMost = $false
+        $filterBox.Focus(); & $refresh
+    }.GetNewClosure())
+    [void]$form.ShowDialog()
+    $timer.Dispose()
+    [pscustomobject]@{ Pinned = @($ctx.Pinned) }
+}
+
+# ---------------------------------------------------------------- launch (build + start wt)
+function Invoke-Launch($Selected, [bool]$FreshRun, [bool]$Remember) {
+    $clauses = @()
+    $extraApps = @()
+    foreach ($p in $Selected) {
+        if (-not (Test-Path -LiteralPath $p.Path)) { Write-Warning "Directory not found: $($p.Path)"; continue }
+        $preset = Get-Preset $p.Name
+
+        # Per-project overrides from presets.json fall back to the global settings.
+        $pShell = $wantShell; if ($preset -and $null -ne $preset.shell) { $pShell = [bool]$preset.shell -and (-not $NoShell) }
+        $pDiff  = $wantDiff;  if ($preset -and $null -ne $preset.diff)  { $pDiff  = [bool]$preset.diff  -and (-not $NoDiff) }
+        $cArgs  = [string]$cfg.claudeArgs; if ($preset -and $null -ne $preset.claudeArgs) { $cArgs = [string]$preset.claudeArgs }
+        $color  = $null
+        if ($wantColor) { $color = Get-TabColor $p.Name; if ($preset -and $preset.tabColor) { $color = [string]$preset.tabColor } }
+
+        # claude --continue only when prior session history exists (and not fresh).
+        $parts = @('claude')
+        if ((Test-ClaudeHistory $p.Path) -and -not $FreshRun) { $parts += '--continue' }
+        if ($cArgs.Trim()) { $parts += ($cArgs.Trim() -replace ';', '\;') }   # args must not contain double quotes
+        # Tab titles: harness tab = "<harness>-<project>", every other tab = "shell-<scope>".
+        $clauses += New-TabClause "claude-code-$($p.Name)" $p.Path ($parts -join ' ') $color
+
+        if ($pShell) {
+            $shellCmd = $null
+            if ($pDiff -and (Test-Path -LiteralPath (Join-Path $p.Path '.git'))) { $shellCmd = 'git status -sb\; git diff --stat' }
+            $clauses += New-TabClause "shell-$($p.Name)" $p.Path $shellCmd $color
+        }
+        if ($preset) {
+            foreach ($t in @($preset.extraTabs)) {
+                if (-not $t) { continue }
+                if (-not (Test-Path -LiteralPath $t.path)) { Write-Warning "Directory not found: $($t.path)"; continue }
+                $clauses += New-TabClause "shell-$($t.title)" $t.path $null $color
+            }
+            foreach ($l in @($preset.launch)) { if ($l) { $extraApps += $l } }
+        }
     }
+    if ($clauses.Count -eq 0) { return }
+
+    $prefix = ''
+    $newWindow = (-not $Window) -or ($Window -eq 'new')
+    if ($Window) { $prefix = "-w $Window " }
+    if ($newWindow) { $clauses += 'focus-tab -t 0' }   # skipped when attaching to an existing window
+    $wtArgs = $prefix + ($clauses -join ' ; ')
+
+    if ($Remember -and -not $DryRun) { $state.last = @($Selected | ForEach-Object { $_.Path }); Save-State }
+    if ($DryRun) {
+        Write-Output $wtArgs
+        foreach ($a in $extraApps) { Write-Output "LAUNCH: $($a.exe) $(@($a.args) -join ' ')" }
+        return
+    }
+    Start-Process -FilePath 'wt.exe' -ArgumentList $wtArgs
+    foreach ($a in $extraApps) {
+        if (-not (Test-Path -LiteralPath $a.exe)) { Write-Warning "Executable not found: $($a.exe)"; continue }
+        if ($a.args) { Start-Process -FilePath $a.exe -ArgumentList @($a.args) } else { Start-Process -FilePath $a.exe }
+    }
+}
+
+# ---------------------------------------------------------------- -Focus (agent-friendly, no UI)
+if ($Focus) {
+    if (Switch-ToProject $Focus) { return }
+    Write-Warning "No open tab found for: $Focus"; exit 1
 }
 
 # ---------------------------------------------------------------- discover
@@ -321,104 +493,52 @@ if ($Project.Count -gt 0 -and -not $List) {
         if ($m) { $selected += (New-Row $m $false $false) } else { Write-Warning "Project not found: $want" }
     }
     if ($selected.Count -eq 0) { exit 1 }
-    $viaPicker = $false
-} else {
-    $needGit = [bool]$cfg.gitInfo -and ($List -or ($Picker -eq 'Forms' -and -not $All))
-    $rows = @($dirs | ForEach-Object { New-Row $_ $true $needGit } | Sort-Object LastActiveDt -Descending)
-    $rows = @(Sort-Projects $rows)
-    if ($Filter) {
-        $rows = @($rows | Where-Object { $_.Name -like "*$Filter*" -or $_.Path -like "*$Filter*" })
-    }
-    if ($Project.Count -gt 0) { $rows = @($rows | Where-Object { $Project -contains $_.Name -or $Project -contains $_.Path }) }
-    if ($Top -gt 0 -and -not $All) { $rows = @($rows | Select-Object -First $Top) }
-
-    if ($List) {
-        $out = @($rows | ForEach-Object {
-            [pscustomobject]@{
-                name = $_.Name; path = $_.Path
-                lastActive = $(if ($_.LastActiveDt) { $_.LastActiveDt.ToString('o') } else { $null })
-                pinned = $_.Pinned; isGit = $_.IsGit; branch = $_.Branch; dirty = $_.Dirty
-                hasClaudeHistory = $_.HasHistory; hasPreset = $_.HasPreset
-            } })
-        ConvertTo-Json -InputObject $out -Depth 3
-        return
-    }
-
-    $viaPicker = -not $All
-    if ($All) {
-        $n = 15; if ($Top -gt 0) { $n = $Top }
-        $selected = @($rows | Select-Object -First $n)
-    } elseif ($Picker -eq 'Grid') {
-        $picked = @($rows | Select-Object Name, Relative, LastActive, Branch, Path |
-            Out-GridView -Title 'Workspace Picker: select projects (Ctrl/Shift for multiple)' -PassThru)
-        $selected = @($rows | Where-Object { $picked.Path -contains $_.Path })
-    } else {
-        $pick = Show-FormsPicker $rows $Filter @($state.last) ([bool]$Fresh)
-        $state.pinned = @($pick.Pinned)
-        if (-not $DryRun) { Save-State }
-        if (-not $pick.Launch) { return }            # cancelled: launch nothing
-        if ($pick.Fresh) { $Fresh = [switch]::new($true) }
-        $selected = @($rows | Where-Object { $pick.Paths -contains $_.Path })
-        # Pins may have changed: keep launch order consistent with the display order.
-        $selected = @(Sort-Projects $selected)
-    }
-}
-if (-not $selected -or $selected.Count -eq 0) { return }   # cancelled / empty: launch nothing
-
-# ---------------------------------------------------------------- build
-$clauses = @()
-$extraApps = @()
-foreach ($p in $selected) {
-    if (-not (Test-Path -LiteralPath $p.Path)) { Write-Warning "Directory not found: $($p.Path)"; continue }
-    $preset = Get-Preset $p.Name
-
-    # Per-project overrides from presets.json fall back to the global settings.
-    $pShell = $wantShell; if ($preset -and $null -ne $preset.shell) { $pShell = [bool]$preset.shell -and (-not $NoShell) }
-    $pDiff  = $wantDiff;  if ($preset -and $null -ne $preset.diff)  { $pDiff  = [bool]$preset.diff  -and (-not $NoDiff) }
-    $cArgs  = [string]$cfg.claudeArgs; if ($preset -and $null -ne $preset.claudeArgs) { $cArgs = [string]$preset.claudeArgs }
-    $color  = $null
-    if ($wantColor) { $color = Get-TabColor $p.Name; if ($preset -and $preset.tabColor) { $color = [string]$preset.tabColor } }
-
-    # claude --continue only when prior session history exists (and not -Fresh).
-    $parts = @('claude')
-    if ((Test-ClaudeHistory $p.Path) -and -not $Fresh) { $parts += '--continue' }
-    if ($cArgs.Trim()) { $parts += ($cArgs.Trim() -replace ';', '\;') }   # args must not contain double quotes
-    # Tab titles: harness tab = "<harness>-<project>", every other tab = "shell-<scope>".
-    $clauses += New-TabClause "claude-code-$($p.Name)" $p.Path ($parts -join ' ') $color
-
-    if ($pShell) {
-        $shellCmd = $null
-        if ($pDiff -and (Test-Path -LiteralPath (Join-Path $p.Path '.git'))) { $shellCmd = 'git status -sb\; git diff --stat' }
-        $clauses += New-TabClause "shell-$($p.Name)" $p.Path $shellCmd $color
-    }
-    if ($preset) {
-        foreach ($t in @($preset.extraTabs)) {
-            if (-not $t) { continue }
-            if (-not (Test-Path -LiteralPath $t.path)) { Write-Warning "Directory not found: $($t.path)"; continue }
-            $clauses += New-TabClause "shell-$($t.title)" $t.path $null $color
-        }
-        foreach ($l in @($preset.launch)) { if ($l) { $extraApps += $l } }
-    }
-}
-if ($clauses.Count -eq 0) { return }
-
-$prefix = ''
-$newWindow = (-not $Window) -or ($Window -eq 'new')
-if ($Window) { $prefix = "-w $Window " }
-if ($newWindow) { $clauses += 'focus-tab -t 0' }   # skipped when attaching to an existing window
-$wtArgs = $prefix + ($clauses -join ' ; ')
-
-# ---------------------------------------------------------------- launch
-if ($viaPicker -and $selected.Count -gt 0 -and -not $DryRun) {
-    $state.last = @($selected | ForEach-Object { $_.Path }); Save-State
-}
-if ($DryRun) {
-    Write-Output $wtArgs
-    foreach ($a in $extraApps) { Write-Output "LAUNCH: $($a.exe) $(@($a.args) -join ' ')" }
+    Invoke-Launch $selected ([bool]$Fresh) $false
     return
 }
-Start-Process -FilePath 'wt.exe' -ArgumentList $wtArgs
-foreach ($a in $extraApps) {
-    if (-not (Test-Path -LiteralPath $a.exe)) { Write-Warning "Executable not found: $($a.exe)"; continue }
-    if ($a.args) { Start-Process -FilePath $a.exe -ArgumentList @($a.args) } else { Start-Process -FilePath $a.exe }
+
+$needGit = [bool]$cfg.gitInfo -and ($List -or ($Picker -eq 'Forms' -and -not $All))
+$rows = @($dirs | ForEach-Object { New-Row $_ $true $needGit } | Sort-Object LastActiveDt -Descending)
+$rows = @(Sort-Projects $rows)
+if ($Filter) { $rows = @($rows | Where-Object { $_.Name -like "*$Filter*" -or $_.Path -like "*$Filter*" }) }
+if ($Project.Count -gt 0) { $rows = @($rows | Where-Object { $Project -contains $_.Name -or $Project -contains $_.Path }) }
+if ($Top -gt 0 -and -not $All) { $rows = @($rows | Select-Object -First $Top) }
+
+if ($List) {
+    $running = @(Get-RunningNames)
+    $out = @($rows | ForEach-Object {
+        $n = $_.Name
+        [pscustomobject]@{
+            name = $_.Name; path = $_.Path
+            lastActive = $(if ($_.LastActiveDt) { $_.LastActiveDt.ToString('o') } else { $null })
+            pinned = $_.Pinned; isGit = $_.IsGit; branch = $_.Branch; dirty = $_.Dirty
+            running = [bool]($running | Where-Object { $_ -ieq $n })
+            hasClaudeHistory = $_.HasHistory; hasPreset = $_.HasPreset
+        } })
+    ConvertTo-Json -InputObject $out -Depth 3
+    return
+}
+
+if ($All) {
+    $n = 15; if ($Top -gt 0) { $n = $Top }
+    Invoke-Launch @($rows | Select-Object -First $n) ([bool]$Fresh) $false
+} elseif ($Picker -eq 'Grid') {
+    $picked = @($rows | Select-Object Name, Relative, LastActive, Branch, Path |
+        Out-GridView -Title 'Workspace Picker: select projects (Ctrl/Shift for multiple)' -PassThru)
+    $sel = @($rows | Where-Object { $picked.Path -contains $_.Path })
+    if ($sel.Count -gt 0) { Invoke-Launch $sel ([bool]$Fresh) $true }
+} else {
+    # Callbacks stay as scriptblocks defined HERE so they keep script scope when invoked from WinForms closures.
+    $onLaunch = {
+        param($paths, $fresh, $pins)
+        $state.pinned = @($pins)
+        $sel = @(Sort-Projects @($rows | Where-Object { $paths -contains $_.Path }))
+        Invoke-Launch $sel ([bool]$fresh -or [bool]$Fresh) $true
+        if (-not $DryRun) { Save-State }
+    }
+    $onSwitch  = { param($name) Switch-ToProject $name }
+    $getRunning = { Get-RunningNames }
+    $res = Show-FormsPicker $rows $Filter @($state.last) ([bool]$Fresh) ([bool]$cfg.keepOpen) $onLaunch $onSwitch $getRunning
+    $state.pinned = @($res.Pinned)
+    if (-not $DryRun) { Save-State }
 }

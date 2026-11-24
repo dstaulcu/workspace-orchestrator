@@ -18,6 +18,8 @@
 - [x] 4. Switches (R5): `-Fresh`, `-NoShell`, `-NoDiff`, `-NoColor`, `-Window`, `-Filter`, `-Top`
 - [x] 5. Verified by dry runs under Windows PowerShell 5.1 (`-List`, multi-name `-Project` with an unknown name, `-Window`)
 
+- [x] 6. Focus (R6): `-Focus <project>` (exit 1 if not open); `running` in `-List`; `keepOpen` config
+
 ## Not done / ideas
 
 - [ ] Pester tests for precedence and the JSON contract

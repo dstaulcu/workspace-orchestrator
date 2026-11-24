@@ -92,6 +92,7 @@ flowchart TB
 | See what you touched last | Picker sorts by last git commit (or newest file) |
 | Keep favorites at the top | **Pin** in the picker |
 | Re-open yesterday's set | Last selection is pre-checked |
+| Find an already-open workspace among many terminal windows | Keep the picker open; **Switch** raises the right tab and window |
 | Know at a glance which repo has uncommitted work | Branch + dirty/clean columns; shell tab shows `git status` and a diff summary on open |
 | Tell projects apart in the tab strip | Stable per-project tab colors |
 | Resume a Claude conversation automatically | `--continue` is used only when a prior session exists |
@@ -124,7 +125,21 @@ By default it treats each immediate subfolder of `C:\code` as a project. Change 
 
 ## Using the picker
 
-Check the projects you want, press **Launch** (or Enter). Type in the filter box to narrow the list. Select a row and click **Pin / Unpin** to keep it at the top. **Fresh sessions** starts plain `claude` instead of `claude --continue`. Cancel launches nothing.
+Check the projects you want, press **Launch** (or Enter). Type in the filter box to narrow the list. Select a row and click **Pin / Unpin** to keep it at the top. **Fresh sessions** starts plain `claude` instead of `claude --continue`. Close launches nothing.
+
+### Stay open and jump between workspaces
+
+The picker stays open after launching (untick **Keep open after launch**, or set `keepOpen: false`, for the old close-on-launch behavior). Projects that already have tabs open in any Windows Terminal window show a ● and a green row. Highlight one and click **Switch** to select its tab and bring its window to the front. That's the answer to "I have a sea of terminals and can't find the right one."
+
+```mermaid
+flowchart LR
+    P["Picker (stays open)"] -- "Refresh / on return" --> UIA["Windows UI Automation<br/>reads tab titles in every<br/>Windows Terminal window"]
+    UIA -- "claude-code-api-server<br/>shell-api-server ..." --> P
+    P -- "Switch" --> F["Select that tab,<br/>raise its window"]
+    P -- "Launch" --> N["Open new tabs"]
+```
+
+This works because every tab has a predictable title: `claude-code-<project>` for the Claude tab and `shell-<scope>` for the others. If you rename a tab or a program overrides its title, that tab won't be found.
 
 Prefer a plain list? `-Picker Grid` uses PowerShell's `Out-GridView`.
 
@@ -152,7 +167,10 @@ powershell.exe -NoProfile -File $s -List -Top 5          # discover
 powershell.exe -NoProfile -File $s -Project a,b -DryRun  # preview
 powershell.exe -NoProfile -File $s -Project a,b          # launch
 powershell.exe -NoProfile -File $s -All -Top 3           # launch the 3 most recent
+powershell.exe -NoProfile -File $s -Focus a              # bring project a's open tab to the front
 ```
+
+`-List` includes a `running` flag per project. `-Focus` exits `1` if the project has no open tab, so an agent can do "focus it if open, otherwise launch it".
 
 Exit code is `1` when none of the requested projects exist.
 
@@ -169,6 +187,7 @@ Exit code is `1` when none of the requested projects exist.
 | `-Picker Forms\|Grid` | Picker style |
 | `-Fresh` | Plain `claude`, ignore session history |
 | `-NoShell` / `-NoDiff` / `-NoColor` | Drop the shell tab / the git summary / tab colors |
+| `-Focus <name>` | Bring an open project's tab and window to the foreground (no UI) |
 | `-Window <id>` | Add tabs to an existing Windows Terminal window (e.g. `0`) |
 | `-DryRun` | Print the `wt` arguments instead of launching |
 
@@ -186,7 +205,7 @@ flowchart LR
 
 Precedence: command-line switch > per-project preset > `config.json`.
 
-**`config.json`**: `root`, `top`, `ignore`, `noiseDirs`, `maxScanFiles`, `maxScanDepth`, `picker`, `shell`, `diff`, `tabColors`, `gitInfo`, `claudeArgs`.
+**`config.json`**: `root`, `top`, `ignore`, `noiseDirs`, `maxScanFiles`, `maxScanDepth`, `picker`, `shell`, `diff`, `tabColors`, `gitInfo`, `claudeArgs`, `keepOpen`.
 
 **`presets.json`**: copy [`presets.example.json`](presets.example.json). Per project (matched by folder name): `extraTabs` (`title` + `path`), `launch` (`exe` + `args`, extra apps), `claudeArgs`, `shell`, `diff`, `tabColor`.
 

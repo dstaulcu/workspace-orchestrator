@@ -32,5 +32,15 @@ When run without selection arguments, the launcher shows a picker so the user ca
 ### R6. Alternate picker
 1. WHEN `-Picker Grid` (or config `picker: Grid`) is set THEN the system SHALL use `Out-GridView -PassThru` instead.
 
+### R8. Persistent picker and switching to open workspaces
+**User story:** As a developer with many terminal windows, I want to find and bring forward a workspace that is already open.
+
+1. WHEN `keepOpen` is true (default; also a checkbox) THEN the picker SHALL remain open after Launch and SHALL uncheck the launched projects.
+2. The picker SHALL show which projects have an open `claude-code-<project>` or `shell-<project>` tab in any Windows Terminal window (● column and highlighted row).
+3. The open-project list SHALL refresh on opening, on a Refresh button, when the picker regains focus (throttled to once per 3 s), and about 4 s after a launch.
+4. WHEN the user highlights a project and clicks Switch THEN the system SHALL select that project's `claude-code-` tab (else its `shell-` tab) and bring its window to the foreground, restoring it if minimized.
+5. IF no matching tab exists THEN the picker SHALL say so and leave the list unchanged.
+6. IF UI Automation is unavailable THEN no project SHALL be shown as open and launching SHALL still work.
+
 ### R7. Non-destructive
 1. A `-DryRun` through the picker SHALL NOT save last-selection (pins are still saved only when not a dry run).

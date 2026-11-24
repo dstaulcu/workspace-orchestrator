@@ -8,7 +8,7 @@ Defaults and per-project behavior are data, not code. A UI-free mode lets script
 
 ### R1. Global configuration
 1. WHEN `config.json` exists THEN the system SHALL load it over built-in defaults; invalid JSON SHALL produce a warning and fall back to defaults.
-2. Configurable keys SHALL include `root`, `top`, `ignore`, `noiseDirs`, `maxScanFiles`, `maxScanDepth`, `picker`, `shell`, `diff`, `tabColors`, `gitInfo`, `claudeArgs`.
+2. Configurable keys SHALL include `root`, `top`, `ignore`, `noiseDirs`, `maxScanFiles`, `maxScanDepth`, `picker`, `shell`, `diff`, `tabColors`, `gitInfo`, `claudeArgs`, `keepOpen`.
 3. WHEN a command-line parameter is supplied THEN it SHALL override the config value.
 
 ### R2. Per-project presets
@@ -29,6 +29,11 @@ Defaults and per-project behavior are data, not code. A UI-free mode lets script
 5. WHEN `-All` is given THEN the system SHALL launch the top N (default 15) without a picker.
 6. WHEN `-DryRun` is given THEN the system SHALL print the `wt` arguments (and extra app launches) and SHALL NOT start any process or write state.
 7. Agent mode SHALL never open a dialog.
+
+### R6. Focusing open workspaces
+1. WHEN `-Focus <project>` is given THEN the system SHALL select that project's open tab (`claude-code-<project>`, else `shell-<project>`) and raise its window, without showing a UI.
+2. IF no such tab is open THEN the system SHALL warn and exit with code 1.
+3. `-List` SHALL include a boolean `running` per project.
 
 ### R5. Window targeting and switches
 1. `-Fresh`, `-NoShell`, `-NoDiff`, `-NoColor` SHALL override the corresponding defaults for one run.

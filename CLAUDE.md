@@ -25,8 +25,9 @@ One script, pipeline: load config/state/presets → discover project folders und
 - **Last active**: latest git commit time if `.git` exists; otherwise newest file time, skipping noise dirs, capped by file count and depth.
 - **`claude --continue`** only if `~\.claude\projects\<path with every non-alphanumeric char → '-'>` exists (e.g. `C:\code\foo` → `C--code-foo`) and `-Fresh` isn't set.
 - **Per project tabs**: Claude tab, shell tab (runs `git status -sb; git diff --stat` in git repos), plus preset `extraTabs`. Tab color is a hash of the project name unless the preset sets `tabColor`.
-- **Agent mode**: `-List` (JSON), `-Project a,b` (skips scan), `-All`, `-DryRun`. Keep these free of any UI.
-- **WinForms handlers are closures** (`.GetNewClosure()`): share mutable state through the `$ctx` hashtable, not `$script:` variables or plain locals.
+- **Agent mode**: `-List` (JSON, includes `running`), `-Project a,b` (skips scan), `-All`, `-Focus <name>` (raise an open tab), `-DryRun`. Keep these free of any UI.
+- **Open-tab detection / switching** uses Windows UI Automation over `CASCADIA_HOSTING_WINDOW_CLASS` windows, matching tab titles `claude-code-<project>` / `shell-<scope>` (`Get-TerminalTabs`, `Get-RunningNames`, `Switch-ToProject`). Changing the tab-title scheme breaks this.
+- **WinForms handlers are closures** (`.GetNewClosure()`): they can't see script functions or `$script:` state. Share mutable state through the `$ctx` hashtable and call back into the script via scriptblocks passed to `Show-FormsPicker` (`$OnLaunch`, `$OnSwitch`, `$GetRunning`). Launching lives in `Invoke-Launch`.
 
 ## `wt.exe` quoting rules (the fragile part)
 

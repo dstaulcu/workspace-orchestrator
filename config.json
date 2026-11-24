@@ -10,5 +10,6 @@
   "diff": true,
   "tabColors": true,
   "gitInfo": true,
+  "keepOpen": true,
   "claudeArgs": ""
 }
