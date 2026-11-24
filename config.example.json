@@ -13,5 +13,11 @@
   "gitInfo": true,
   "keepOpen": true,
   "refreshSeconds": 60,
+  "arrangeOnLaunch": true,
+  "arrangeStyle": "cascade",
+  "keepDesktopIconsClear": true,
+  "windowWidth": 1100,
+  "windowHeight": 750,
+  "restoreLayouts": true,
   "claudeArgs": ""
 }

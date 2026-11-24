@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Experimental (v0.3.x). Specs live in `.kiro/specs/` (requirements, design, tasks per feature); `README.md` explains the concepts. No test suite; verify with `-DryRun` and `-List`.
 
-Files: `Start-WorkspaceOrchestrator.ps1` (everything), `Install-Shortcut.ps1` (Desktop .lnk; `-Project <name>` makes a per-project one), `config.example.json` / `presets.example.json` (templates; the picker's Settings button copies them into place), `config.schema.json` / `presets.schema.json`. User settings live OUTSIDE the repo in `~\.config\workspace_picker\`: `config.json` (defaults; parameters override), `presets.json` (per-project `extraTabs`, `launch`, `claudeArgs`, `shell`, `diff`, `tabColor`), `state.json` (auto-written: pins + last selection). Old copies next to the script are moved there once.
+Files: `Start-WorkspaceOrchestrator.ps1` (everything), `Install-Shortcut.ps1` (Desktop .lnk; `-Project <name>` makes a per-project one), `config.example.json` / `presets.example.json` (templates; the picker's Settings button copies them into place), `config.schema.json` / `presets.schema.json`. User settings live OUTSIDE the repo in `~\.config\workspace_picker\`: `config.json` (defaults; parameters override), `presets.json` (per-project `extraTabs`, `launch`, `claudeArgs`, `shell`, `diff`, `tabColor`), `state.json` (auto-written: pins + last selection), `layouts.json` (saved window positions per monitor setup). Old copies next to the script are moved there once.
 
 ## Commands
 

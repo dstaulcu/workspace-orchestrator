@@ -54,3 +54,12 @@ A launcher that finds recently active project folders and opens them as workspac
 2. Tab titles SHALL be short: `cc:<project>` for the Claude tab and `sh:<scope>` for others. Detection SHALL also accept the legacy `claude-code-` / `shell-` prefixes so tabs opened by older versions still show as open.
 3. WHEN a selected project already has an open `cc:`/`sh:` tab THEN launching it SHALL bring that tab's window to the foreground instead of opening a second copy; the remaining projects SHALL launch normally. `-DryRun` SHALL print `FOCUS (already open): <name>` for these.
 4. Shift+Launch in the picker SHALL skip that check and open a new window even if the project is already open.
+
+### R10. Window arrangement
+1. WHEN 2 or more new windows are launched AND `arrangeOnLaunch` is true THEN the system SHALL arrange them on the primary screen's work area once they appear (waiting up to 15 s), using `arrangeStyle`: `cascade` (default; overlapping, offset so title bars stay visible), `grid`, `columns` or `rows`.
+2. The picker's Settings menu SHALL offer "Save window layout", recording each open project's window rectangle and maximized state into `layouts.json`, keyed by the monitor configuration.
+3. WHEN `restoreLayouts` is true AND a saved layout exists for the current monitor configuration THEN a launched project's window SHALL be placed at its saved position; remaining windows SHALL be arranged per item 1.
+4. The picker SHALL have an Arrange button with a menu (Cascade, Tile in a grid, Side by side, Stacked, Reset window size, Restore saved layout only) that applies items 1 and 3 to all currently open project windows on demand (Shift = ignore saved layouts).
+5. Cascade and Reset window size SHALL size windows to `windowWidth` x `windowHeight` (default 1100 x 750 px, clamped to the screen); grid, columns and rows SHALL fill their cells.
+6. WHEN `keepDesktopIconsClear` is true (default) THEN arrangement SHALL start at the second desktop-icon row and column (offset by the Windows icon spacing), leaving the first column and row of desktop icons uncovered.
+7. Launch-time arrangement SHALL NOT run in `-DryRun` or when `-Window <id>` is used, and a failure SHALL only warn.

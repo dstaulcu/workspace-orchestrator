@@ -57,7 +57,7 @@ $cfg = @{
     root = 'C:\code'; top = 0; ignore = @()
     noiseDirs = @('.git','node_modules','.venv','venv','__pycache__','dist','build','.next','bin','obj','.idea','.vscode')
     maxScanFiles = 5000; maxScanDepth = 6; picker = 'Forms'
-    shell = $true; diff = $true; tabColors = $true; gitInfo = $true; claudeArgs = ''; keepOpen = $true; refreshSeconds = 60
+    shell = $true; diff = $true; tabColors = $true; gitInfo = $true; claudeArgs = ''; keepOpen = $true; refreshSeconds = 60; arrangeOnLaunch = $true; arrangeStyle = 'cascade'; keepDesktopIconsClear = $true; windowWidth = 1100; windowHeight = 750; restoreLayouts = $true
 }
 # Settings live outside the repo so they survive updates; files from older versions are moved over once.
 $ConfigDir = Join-Path $env:USERPROFILE '.config\workspace_picker'
@@ -221,18 +221,186 @@ function Get-RunningNames {
 }
 
 # Select the project's harness tab (else its shell tab) and raise the window. Returns $true if found.
-function Switch-ToProject([string]$Name) {
-    if (-not ('WoWin' -as [type])) {
-        Add-Type @'
+function Initialize-WinApi {
+    if ('WoWin' -as [type]) { return }
+    Add-Type @'
 using System; using System.Runtime.InteropServices;
 public static class WoWin {
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr h);
+  [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int w, int ht, uint flags);
   [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
 }
 '@
+}
+
+# ---------------------------------------------------------------- window arrangement (tile on launch, saved layouts)
+# One entry per Windows Terminal window: its handle and the project its cc:/sh: tabs name.
+function Get-TerminalWindows {
+    $byHandle = [ordered]@{}
+    foreach ($t in @(Get-TerminalTabs)) {
+        $h = [int64]$t.Window.Current.NativeWindowHandle
+        if (-not $byHandle.Contains($h)) { $byHandle[$h] = [pscustomobject]@{ Handle = $h; Name = $null; Sh = $null } }
+        if ($t.Title -match '^(?:cc:|claude-code-)(.+)$' -and -not $byHandle[$h].Name) { $byHandle[$h].Name = $Matches[1] }
+        elseif ($t.Title -match '^(?:sh:|shell-)(.+)$' -and -not $byHandle[$h].Sh) { $byHandle[$h].Sh = $Matches[1] }
     }
+    foreach ($w in $byHandle.Values) { if (-not $w.Name) { $w.Name = $w.Sh } }
+    @($byHandle.Values)
+}
+
+# Identifies the monitor setup so a saved layout is only reused when the screens are the same.
+function Get-ScreenSignature {
+    Add-Type -AssemblyName System.Windows.Forms
+    (@([System.Windows.Forms.Screen]::AllScreens | Sort-Object DeviceName | ForEach-Object { "$($_.Bounds.X),$($_.Bounds.Y),$($_.Bounds.Width)x$($_.Bounds.Height)" }) -join '|')
+}
+
+function Get-SavedLayout {
+    $f = Join-Path $ConfigDir 'layouts.json'
+    if (-not (Test-Path -LiteralPath $f)) { return @{} }
+    try {
+        $all = Get-Content -LiteralPath $f -Raw | ConvertFrom-Json
+        $set = $all.PSObject.Properties[(Get-ScreenSignature)]
+        $out = @{}
+        if ($set) { foreach ($p in $set.Value.PSObject.Properties) { $out[$p.Name] = $p.Value } }
+        return $out
+    } catch { Write-Warning "Could not read layouts.json: $_"; return @{} }
+}
+
+# Record where each open project's window is (for the current monitor setup). Returns how many were saved.
+function Save-WindowLayout {
+    Initialize-WinApi
+    $f = Join-Path $ConfigDir 'layouts.json'
+    $all = [ordered]@{}
+    if (Test-Path -LiteralPath $f) {
+        try { foreach ($p in (Get-Content -LiteralPath $f -Raw | ConvertFrom-Json).PSObject.Properties) { $all[$p.Name] = $p.Value } } catch { }
+    }
+    $sig = Get-ScreenSignature
+    $cur = [ordered]@{}
+    if ($all.Contains($sig)) { foreach ($p in $all[$sig].PSObject.Properties) { $cur[$p.Name] = $p.Value } }
+    $n = 0
+    foreach ($w in @(Get-TerminalWindows)) {
+        if (-not $w.Name) { continue }
+        $h = [IntPtr]$w.Handle
+        if ([WoWin]::IsIconic($h)) { continue }
+        $r = New-Object WoWin+RECT
+        if (-not [WoWin]::GetWindowRect($h, [ref]$r)) { continue }
+        $cur[$w.Name] = [pscustomobject]@{ x = $r.Left; y = $r.Top; w = $r.Right - $r.Left; h = $r.Bottom - $r.Top; max = [bool][WoWin]::IsZoomed($h) }
+        $n++
+    }
+    $all[$sig] = [pscustomobject]$cur
+    New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
+    ([pscustomobject]$all | ConvertTo-Json -Depth 5) | Set-Content -LiteralPath $f -Encoding UTF8
+    return $n
+}
+
+function Set-WindowRect([int64]$Handle, [int]$X, [int]$Y, [int]$W, [int]$H, [bool]$Maximize = $false, [bool]$Raise = $false) {
+    Initialize-WinApi
+    $p = [IntPtr]$Handle
+    [void][WoWin]::ShowWindow($p, 9)                                   # restore if minimized / maximized
+    $flags = 0x0014   # SWP_NOZORDER | SWP_NOACTIVATE
+    if ($Raise) { $flags = 0x0010 }   # keep z-order logic: place on top (used by cascade so later windows sit above earlier ones)
+    [void][WoWin]::SetWindowPos($p, [IntPtr]::Zero, $X, $Y, $W, $H, $flags)
+    if ($Maximize) { [void][WoWin]::ShowWindow($p, 3) }
+}
+
+# After launching, wait for the new windows (those not in $Before) to show up, then give each its saved spot,
+# and tile the rest in a grid on the primary screen's work area.
+function Invoke-WindowArrangement([int64[]]$Before, [string[]]$Names) {
+    $useSaved = [bool]$cfg.restoreLayouts; $useTile = [bool]$cfg.arrangeOnLaunch; $style = [string]$cfg.arrangeStyle; if (-not $style) { $style = 'cascade' }
+    if (-not $useSaved -and -not $useTile) { return }
+    $saved = @{}; if ($useSaved) { $saved = Get-SavedLayout }
+    if (-not $useTile -and -not ($Names | Where-Object { $saved.ContainsKey($_) })) { return }
+    if ($useTile -and $Names.Count -lt 2 -and -not ($Names | Where-Object { $saved.ContainsKey($_) })) { return }
+    $deadline = (Get-Date).AddSeconds(15); $found = @()
+    do {
+        Start-Sleep -Milliseconds 400
+        $found = @(Get-TerminalWindows | Where-Object { $Before -notcontains $_.Handle -and $Names -contains $_.Name })
+    } while ($found.Count -lt $Names.Count -and (Get-Date) -lt $deadline)
+    if (-not $found.Count) { return }
+    $st = 'none'; if ($useTile) { $st = $style }
+    [void](Set-WindowArrangement $found $Names $saved $st)
+}
+
+# Place windows at their saved spot where one exists; arrange the others (2 or more) on the primary screen.
+# $Style: cascade | grid | columns | rows | resize (default size, same position) | none (only restore saved spots).
+# Cascade and resize use the default window size (windowWidth x windowHeight), clamped to the work area.
+# Returns the number of windows moved.
+function Set-WindowArrangement($Windows, [string[]]$Names, $Saved, [string]$Style) {
+    Add-Type -AssemblyName System.Windows.Forms
+    $wa = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+    if ($cfg.keepDesktopIconsClear) {
+        # Start at desktop-icon row 2, column 2 so the first column and row of desktop shortcuts stay visible.
+        Initialize-WinApi
+        $ix = [WoWin]::GetSystemMetrics(38); $iy = [WoWin]::GetSystemMetrics(39)   # SM_CXICONSPACING / SM_CYICONSPACING
+        if ($ix -gt 0 -and $iy -gt 0 -and $ix -lt $wa.Width / 3 -and $iy -lt $wa.Height / 3) {
+            $wa = New-Object System.Drawing.Rectangle(($wa.X + $ix), ($wa.Y + $iy), ($wa.Width - $ix), ($wa.Height - $iy))
+        }
+    }
+    $dw = [Math]::Min([int]$cfg.windowWidth, $wa.Width); $dh = [Math]::Min([int]$cfg.windowHeight, $wa.Height)
+    if ($dw -lt 300) { $dw = [Math]::Min(1100, $wa.Width) }; if ($dh -lt 200) { $dh = [Math]::Min(750, $wa.Height) }
+    if ($Style -eq 'resize') {
+        # Back to the default size; keep each window's top-left (nudged so it stays on its screen).
+        Initialize-WinApi
+        $moved = 0
+        foreach ($w in $Windows) {
+            $r = New-Object WoWin+RECT
+            if (-not [WoWin]::GetWindowRect([IntPtr]$w.Handle, [ref]$r)) { continue }
+            $scr = [System.Windows.Forms.Screen]::FromPoint((New-Object System.Drawing.Point(($r.Left + 40), ($r.Top + 40)))).WorkingArea
+            $ww = [Math]::Min($dw, $scr.Width); $hh = [Math]::Min($dh, $scr.Height)
+            $x = [Math]::Max($scr.X, [Math]::Min($r.Left, $scr.Right - $ww)); $y = [Math]::Max($scr.Y, [Math]::Min($r.Top, $scr.Bottom - $hh))
+            Set-WindowRect $w.Handle $x $y $ww $hh
+            $moved++
+        }
+        return $moved
+    }
+    $byName = @{}; foreach ($w in $Windows) { $byName[$w.Name] = $w }
+    $rest = @(); $moved = 0
+    foreach ($n in $Names) {
+        if (-not $byName.ContainsKey($n)) { continue }
+        if ($Saved.ContainsKey($n)) { $s = $Saved[$n]; Set-WindowRect $byName[$n].Handle $s.x $s.y $s.w $s.h ([bool]$s.max); $moved++ }
+        else { $rest += $byName[$n] }
+    }
+    if ($Style -eq 'none' -or $rest.Count -lt 2) { return $moved }
+    if ($Style -eq 'cascade') {
+        # Overlapping windows, each offset down-right so every title bar stays visible; later windows sit on top.
+        $step = 48
+        $w = $dw; $h = $dh
+        $slots = [Math]::Max(1, [Math]::Min([int][Math]::Floor(($wa.Width - $w) / $step), [int][Math]::Floor(($wa.Height - $h) / $step)) + 1)
+        for ($i = 0; $i -lt $rest.Count; $i++) {
+            $k = $i % $slots
+            Set-WindowRect $rest[$i].Handle ($wa.X + $k * $step) ($wa.Y + $k * $step) $w $h $false $true
+            $moved++
+        }
+        return $moved
+    }
+    switch ($Style) {
+        'columns' { $cols = $rest.Count; $rows = 1 }
+        'rows'    { $cols = 1; $rows = $rest.Count }
+        default   { $cols = [int][Math]::Ceiling([Math]::Sqrt($rest.Count)); $rows = [int][Math]::Ceiling($rest.Count / $cols) }
+    }
+    $cw = [int][Math]::Floor($wa.Width / $cols); $ch = [int][Math]::Floor($wa.Height / $rows)
+    for ($i = 0; $i -lt $rest.Count; $i++) {
+        Set-WindowRect $rest[$i].Handle ($wa.X + ($i % $cols) * $cw) ($wa.Y + [Math]::Floor($i / $cols) * $ch) $cw $ch
+        $moved++
+    }
+    return $moved
+}
+
+# On demand: arrange every open project window (saved spots first, unless -IgnoreSaved; the rest per $Style).
+function Invoke-ArrangeOpen([string]$Style = 'cascade', [bool]$IgnoreSaved = $false) {
+    $wins = @(Get-TerminalWindows | Where-Object { $_.Name } | Sort-Object Name)
+    if (-not $wins.Count) { return 0 }
+    $saved = @{}; if ($cfg.restoreLayouts -and -not $IgnoreSaved) { $saved = Get-SavedLayout }
+    return (Set-WindowArrangement $wins @($wins | ForEach-Object { $_.Name }) $saved $Style)
+}
+
+function Switch-ToProject([string]$Name) {
+    Initialize-WinApi
     $tabs = @(Get-TerminalTabs)
     $hit = $tabs | Where-Object { $_.Title -ieq "cc:$Name" -or $_.Title -ieq "claude-code-$Name" } | Select-Object -First 1
     if (-not $hit) { $hit = $tabs | Where-Object { $_.Title -ieq "sh:$Name" -or $_.Title -ieq "shell-$Name" } | Select-Object -First 1 }
@@ -268,7 +436,7 @@ function New-TabClause([string]$Title, [string]$Dir, [string]$Command, [string]$
 # list of open projects comes from $GetRunning (all scriptblocks defined in the main script,
 # because WinForms handlers are closures that can't see script-scope state or functions).
 function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [bool]$InitialFresh,
-                          [bool]$KeepOpen, [scriptblock]$OnLaunch, [scriptblock]$OnSwitch, [scriptblock]$GetRunning, [int]$RefreshSeconds = 0) {
+                          [bool]$KeepOpen, [scriptblock]$OnLaunch, [scriptblock]$OnSwitch, [scriptblock]$GetRunning, [int]$RefreshSeconds = 0, [scriptblock]$OnSaveLayout, [scriptblock]$OnArrange) {
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
     [System.Windows.Forms.Application]::EnableVisualStyles()
@@ -291,7 +459,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
     foreach ($p in $Preselect)    { [void]$ctx.Checked.Add($p) }
 
     $form = New-Object System.Windows.Forms.Form
-    $form.Text = 'Workspace Picker'; $form.ClientSize = New-Object System.Drawing.Size(1040, 628)
+    $form.Text = 'Workspace Picker'; $form.ClientSize = New-Object System.Drawing.Size(1150, 628)
     $form.StartPosition = 'CenterScreen'; $form.KeyPreview = $true
 
     $lbl = New-Object System.Windows.Forms.Label
@@ -304,7 +472,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
 
     $lv = New-Object System.Windows.Forms.ListView
     $lv.View = 'Details'; $lv.CheckBoxes = $true; $lv.FullRowSelect = $true; $lv.GridLines = $true; $lv.HideSelection = $false
-    $lv.Location = New-Object System.Drawing.Point(12, 44); $lv.Size = New-Object System.Drawing.Size(1016, 500)
+    $lv.Location = New-Object System.Drawing.Point(12, 44); $lv.Size = New-Object System.Drawing.Size(1126, 500)
     $lv.Anchor = 'Top,Bottom,Left,Right'
     # Path comes before the git-only columns (Branch, State, Remote) because not every project is a repo.
     # The Remote link column index is stored in $ctx.RemoteCol (set with $colHelp below); keep it, $colHelp and the
@@ -367,7 +535,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
     $repoUrl = 'https://github.com/dstaulcu/workspace-orchestrator'
     $help = New-Object System.Windows.Forms.LinkLabel
     $help.Text = 'Help:  Repository  |  Open issues  |  Report a bug or request a feature'
-    $help.AutoSize = $true; $help.Location = New-Object System.Drawing.Point(560, 552); $help.Anchor = 'Bottom,Right'
+    $help.AutoSize = $true; $help.Location = New-Object System.Drawing.Point(670, 552); $help.Anchor = 'Bottom,Right'
     foreach ($l in @(@('Repository', $repoUrl), @('Open issues', "$repoUrl/issues"), @('Report a bug or request a feature', "$repoUrl/issues/new/choose"))) {
         [void]$help.Links.Add($help.Text.IndexOf($l[0]), $l[0].Length, $l[1])
     }
@@ -390,21 +558,23 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
         $b
     }
     $btnSettings = New-Btn 'Settings' 372
-    $btnRefresh = New-Btn 'Refresh' 480
-    $btnPin     = New-Btn 'Pin / Unpin' 590
-    $btnSwitch  = New-Btn 'Switch' 700
-    $btnGo      = New-Btn 'Launch' 810
-    $btnClose   = New-Btn 'Close' 920
+    $btnArrange = New-Btn 'Arrange' 480
+    $btnRefresh = New-Btn 'Refresh' 590
+    $btnPin     = New-Btn 'Pin / Unpin' 700
+    $btnSwitch  = New-Btn 'Switch' 810
+    $btnGo      = New-Btn 'Launch' 920
+    $btnClose   = New-Btn 'Close' 1030
     $btnClose.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
     $form.AcceptButton = $btnGo; $form.CancelButton = $btnClose
-    $form.Controls.AddRange(@($lbl, $filterBox, $hint, $lv, $status, $help, $chkFresh, $chkKeep, $btnSettings, $btnRefresh, $btnPin, $btnSwitch, $btnGo, $btnClose))
+    $form.Controls.AddRange(@($lbl, $filterBox, $hint, $lv, $status, $help, $chkFresh, $chkKeep, $btnSettings, $btnArrange, $btnRefresh, $btnPin, $btnSwitch, $btnGo, $btnClose))
 
     $ctrlTip = New-Object System.Windows.Forms.ToolTip
     $ctrlTip.InitialDelay = 400; $ctrlTip.AutoPopDelay = 12000
     $ctrlTip.SetToolTip($filterBox, 'Type to narrow the list by project name or path. Checked projects stay checked while you filter.')
     $ctrlTip.SetToolTip($chkFresh, 'Start plain "claude" instead of "claude --continue", even for projects with earlier sessions.')
     $ctrlTip.SetToolTip($chkKeep, 'Leave this picker open after launching so you can launch more or Switch to open workspaces. Untick to close after Launch.')
-    $ctrlTip.SetToolTip($btnSettings, 'Edit config.json (global defaults) or presets.json (per-project overrides) in your default editor. Changes apply the next time the picker starts.')
+    $ctrlTip.SetToolTip($btnSettings, 'Edit config.json (global defaults) or presets.json (per-project overrides) in your default editor (changes apply the next time the picker starts), or save the positions of your open project windows so Launch restores them.')
+    $ctrlTip.SetToolTip($btnArrange, 'Arrange the windows of all open projects now. Choose cascade, grid, side by side or stacked, or reset windows to the default size. Windows with a saved spot (Settings > Save window layout) go there; hold Shift while choosing to ignore saved spots.')
     $ctrlTip.SetToolTip($btnRefresh, 'Re-check which projects have tabs open in Windows Terminal (also happens when you return to this window).')
     $ctrlTip.SetToolTip($btnPin, 'Pin or unpin the highlighted projects. Pinned projects (star) stay at the top of the list and are remembered.')
     $ctrlTip.SetToolTip($btnSwitch, 'Bring the highlighted project''s open tab and its terminal window to the foreground. Works for projects marked open.')
@@ -497,10 +667,25 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
     }.GetNewClosure())
     $filterBox.Add_TextChanged({ & $fill }.GetNewClosure())
     $btnRefresh.Add_Click({ & $refresh }.GetNewClosure())
+    # Arrange: pick a style from a menu. Shift while choosing = ignore saved spots.
+    $arrMenu = New-Object System.Windows.Forms.ContextMenuStrip
+    foreach ($opt in @(@('Cascade (overlapping, title bars visible)', 'cascade'), @('Tile in a grid', 'grid'), @('Side by side (columns)', 'columns'), @('Stacked (rows)', 'rows'), @('-', ''), @('Reset window size (keep positions)', 'resize'), @('Restore saved layout only', 'none'))) {
+        if ($opt[0] -eq '-') { [void]$arrMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)); continue }
+        $mi = $arrMenu.Items.Add($opt[0]); $style = $opt[1]
+        $mi.Add_Click({
+            try {
+                $shift = [bool]([System.Windows.Forms.Control]::ModifierKeys -band [System.Windows.Forms.Keys]::Shift)
+                $n = & $OnArrange $style $shift
+                if ($n -gt 0) { $status.Text = "Arranged $n window(s)." } else { $status.Text = 'Nothing to arrange (no open project windows, or only one and no saved spot).' }
+            } catch { $status.Text = "Could not arrange windows: $_" }
+        }.GetNewClosure())
+    }
+    $btnArrange.Add_Click({ $arrMenu.Show($btnArrange, (New-Object System.Drawing.Point(0, $btnArrange.Height))) }.GetNewClosure())
     # Settings: open the JSON files in the default editor (created from the example files if missing).
     $menu = New-Object System.Windows.Forms.ContextMenuStrip
     $miCfg = $menu.Items.Add('Edit config.json (global defaults)')
     $miPre = $menu.Items.Add('Edit presets.json (per-project overrides)')
+    $miLay = $menu.Items.Add('Save window layout (remember where open projects are)')
     $miCfg.Add_Click({
         try {
             New-Item -ItemType Directory -Force -Path $ctx.ConfigDir | Out-Null
@@ -513,6 +698,12 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
             if (-not (Test-Path -LiteralPath $ctx.PresetFile) -and (Test-Path -LiteralPath $ctx.PresetExample)) { Copy-Item -LiteralPath $ctx.PresetExample -Destination $ctx.PresetFile }
             Start-Process -FilePath $ctx.PresetFile; $status.Text = 'Opened presets.json. Restart the picker to apply changes.'
         } catch { $status.Text = "Could not open presets.json: $_" }
+    }.GetNewClosure())
+    $miLay.Add_Click({
+        try {
+            $n = & $OnSaveLayout
+            $status.Text = "Saved window positions for $n open project(s). They are restored the next time you launch them."
+        } catch { $status.Text = "Could not save layout: $_" }
     }.GetNewClosure())
     $btnSettings.Add_Click({ $menu.Show($btnSettings, (New-Object System.Drawing.Point(0, $btnSettings.Height))) }.GetNewClosure())
     $btnPin.Add_Click({
@@ -561,7 +752,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
 
 # ---------------------------------------------------------------- launch (build + start wt)
 function Invoke-Launch($Selected, [bool]$FreshRun, [bool]$Remember, [bool]$ForceNew = $false) {
-    $groups = @()
+    $groups = @(); $groupNames = @()
     $extraApps = @()
     # Projects that already have a tab open are brought to the foreground instead of being launched a second time.
     $open = @(); if (-not $ForceNew) { $open = @(Get-RunningNames) }
@@ -599,7 +790,7 @@ function Invoke-Launch($Selected, [bool]$FreshRun, [bool]$Remember, [bool]$Force
             }
             foreach ($l in @($preset.launch)) { if ($l) { $extraApps += $l } }
         }
-        $groups += ,$pc
+        $groups += ,$pc; $groupNames += $p.Name
     }
     if ($groups.Count -eq 0 -and -not $toFocus.Count) { return }
 
@@ -620,7 +811,9 @@ function Invoke-Launch($Selected, [bool]$FreshRun, [bool]$Remember, [bool]$Force
         foreach ($a in $extraApps) { Write-Output "LAUNCH: $($a.exe) $(@($a.args) -join ' ')" }
         return
     }
+    $before = @(); if ($newWindow -and $calls.Count) { $before = @(Get-TerminalWindows | ForEach-Object { $_.Handle }) }
     foreach ($c in $calls) { Start-Process -FilePath 'wt.exe' -ArgumentList $c; if ($calls.Count -gt 1) { Start-Sleep -Milliseconds 400 } }
+    if ($newWindow -and $calls.Count) { try { Invoke-WindowArrangement $before $groupNames } catch { Write-Warning "Window arrangement failed: $_" } }
     # Raise already-open projects last (after any new windows have appeared) so they end up in front.
     if ($toFocus.Count -and $calls.Count) { Start-Sleep -Milliseconds 1200 }
     foreach ($n in $toFocus) { [void](Switch-ToProject $n) }
@@ -717,7 +910,9 @@ if ($All) {
     }
     $onSwitch  = { param($name) Switch-ToProject $name }
     $getRunning = { Get-RunningNames }
-    $res = Show-FormsPicker $rows $Filter @($state.last) ([bool]$Fresh) ([bool]$cfg.keepOpen) $onLaunch $onSwitch $getRunning ([int]$cfg.refreshSeconds)
+    $onSaveLayout = { Save-WindowLayout }
+    $onArrange = { param($style, $ignoreSaved) Invoke-ArrangeOpen ([string]$style) ([bool]$ignoreSaved) }
+    $res = Show-FormsPicker $rows $Filter @($state.last) ([bool]$Fresh) ([bool]$cfg.keepOpen) $onLaunch $onSwitch $getRunning ([int]$cfg.refreshSeconds) $onSaveLayout $onArrange
     $state.pinned = @($res.Pinned)
     if (-not $DryRun) { Save-State }
 }

@@ -23,6 +23,7 @@
 
 - [x] 7. Tab naming (issue #1, naming part): harness tab `cc:<project>`, other tabs `sh:<scope>`
 - [x] 8. Window per project (`-w new`), compact `cc:`/`sh:` titles, focus-if-open, Shift+Launch (R9)
+- [x] 9. Window arrangement: auto-arrange on launch (cascade default), Save window layout (R10). Not yet hands-on tested.
 
 ## Not done / ideas
 

@@ -17,6 +17,12 @@
     "tabColors":    { "type": "boolean", "default": true, "description": "Color tabs by a hash of the project name. -NoColor overrides." },
     "gitInfo":      { "type": "boolean", "default": true, "description": "Show branch, state and remote columns in the picker." },
     "refreshSeconds": { "type": "integer", "minimum": 0, "default": 60, "description": "While the picker is open, re-check which projects have tabs open every N seconds (minimum 5); 0 = off. The list only redraws when something changed." },
+    "arrangeOnLaunch": { "type": "boolean", "default": true, "description": "After launching 2 or more projects, arrange their new windows on the primary screen using arrangeStyle (projects with a saved layout keep their saved spot)." },
+    "arrangeStyle": { "enum": ["cascade", "grid", "columns", "rows"], "default": "cascade", "description": "How windows are arranged on launch and by default: cascade (overlapping, title bars visible), grid, columns (side by side) or rows (stacked)." },
+    "keepDesktopIconsClear": { "type": "boolean", "default": true, "description": "Start arranged windows at desktop-icon row 2, column 2 (using the Windows icon spacing) so the first column and row of desktop shortcuts stay visible." },
+    "windowWidth":  { "type": "integer", "minimum": 300, "default": 1100, "description": "Default window width in pixels used by cascade and Reset window size (clamped to the screen)." },
+    "windowHeight": { "type": "integer", "minimum": 200, "default": 750, "description": "Default window height in pixels used by cascade and Reset window size (clamped to the screen)." },
+    "restoreLayouts": { "type": "boolean", "default": true, "description": "Put a project's new window where it was when you last used Settings > Save window layout (per monitor setup)." },
     "keepOpen":     { "type": "boolean", "default": true, "description": "Keep the picker open after launching." },
     "claudeArgs":   { "type": "string", "default": "", "description": "Extra arguments for claude in every project (no double quotes). Presets can override per project." }
   }

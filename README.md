@@ -139,6 +139,16 @@ By default it treats each immediate subfolder of `C:\code` as a project. Change 
 
 Check the projects you want, press **Launch** (or Enter). Type in the filter box to narrow the list. Select a row and click **Pin / Unpin** to keep it at the top. **Fresh sessions** starts plain `claude` instead of `claude --continue`. If a checked project is already open in a terminal, Launch brings its window to the front instead of opening a second copy (hold **Shift** while clicking Launch to open a new one anyway). Close launches nothing.
 
+### Arrange your windows
+
+Launch 2 or more projects and their windows are **cascaded** on your primary screen instead of piling up exactly on top of each other: overlapping, each offset so every title bar stays visible (`arrangeOnLaunch`, `arrangeStyle`). Prefer something else? Set `arrangeStyle` to `grid`, `columns` (side by side) or `rows` (stacked).
+
+Click **Arrange** in the picker at any time to tidy the windows that are already open. Pick a style from its menu: **Cascade**, **Tile in a grid**, **Side by side**, **Stacked**, **Reset window size** (default size, windows stay where they are) or **Restore saved layout only**. Cascade and Reset use a comfortable default size (`windowWidth` x `windowHeight`, 1100 x 750 pixels) instead of stretching windows across a wide monitor; only grid, columns and rows fill their cells. Hold **Shift** while choosing to ignore saved spots.
+
+By default windows start at **desktop-icon row 2, column 2** (`keepDesktopIconsClear`), so the first column and row of your desktop shortcuts stay visible; set it to `false` to use the whole screen.
+
+Want exact positions? Arrange the windows how you like, then use **Settings > Save window layout**. The next time you launch those projects (`restoreLayouts`) each one reopens in its saved spot, and the rest are arranged with your chosen style. Layouts are stored in `layouts.json`, keyed by your monitor setup, so a laptop-only day and a docked day don't fight each other.
+
 ### Stay open and jump between workspaces
 
 The picker stays open after launching and quietly rechecks your terminals every `refreshSeconds` (60 by default; `0` turns it off), redrawing only when something changed (untick **Keep open after launch**, or set `keepOpen: false`, for the old close-on-launch behavior). Projects that already have tabs open in any Windows Terminal window show a ● and a green row. Highlight one and click **Switch** to select its tab and bring its window to the front. That's the answer to "I have a sea of terminals and can't find the right one."
@@ -237,6 +247,11 @@ All three files live in `~\.config\workspace_picker\` (outside the repo, so upda
 | `tabColors` | bool | `true` | Color tabs by project name | `-NoColor`, preset `tabColor` |
 | `gitInfo` | bool | `true` | Show branch / state / remote columns | none |
 | `keepOpen` | bool | `true` | Keep the picker open after launching | picker checkbox |
+| `arrangeOnLaunch` | bool | `true` | After launching 2+ projects, arrange the new windows on the primary screen | none |
+| `keepDesktopIconsClear` | bool | `true` | Arranged windows start at desktop-icon row 2, column 2 (first column/row of desktop icons stay visible) | none |
+| `windowWidth` / `windowHeight` | int | `1100` / `750` | Default window size in pixels for Cascade and Reset window size (clamped to the screen) | none |
+| `arrangeStyle` | `cascade` \| `grid` \| `columns` \| `rows` | `cascade` | How windows are arranged (overlapping cascade, grid, side by side, stacked) | Arrange menu |
+| `restoreLayouts` | bool | `true` | Put each project's new window where you last saved it (**Settings > Save window layout**; stored per monitor setup in `layouts.json`) | none |
 | `refreshSeconds` | int | `60` | While the picker is open, re-check which projects have tabs open every N seconds (min 5; `0` = off) | none |
 | `claudeArgs` | string | `""` | Extra `claude` arguments (no double quotes) | preset |
 
