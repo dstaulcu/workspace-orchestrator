@@ -25,9 +25,9 @@ A launcher that finds recently active project folders and opens them as workspac
 **User story:** As a developer, I want all selected projects open in one terminal window with no manual `cd`.
 
 1. WHEN projects are launched THEN the system SHALL invoke `wt.exe` once, producing one window.
-2. FOR each project the system SHALL create a Claude Code tab titled `claude-code-<project>`, starting in the project directory.
+2. FOR each project the system SHALL create a Claude Code tab titled `cc:<project>`, starting in the project directory.
 3. WHEN a project has Claude session history (`~\.claude\projects\<path-encoded>`) AND fresh mode is not requested THEN the Claude tab SHALL run `claude --continue`; otherwise `claude`.
-4. WHEN the shell tab is enabled (default) THEN the system SHALL create a PowerShell tab titled `shell-<project>` in the project directory. Preset extra tabs SHALL be titled `shell-<title>`.
+4. WHEN the shell tab is enabled (default) THEN the system SHALL create a PowerShell tab titled `sh:<project>` in the project directory. Preset extra tabs SHALL be titled `shell-<title>`.
 5. WHEN the project is a git repository AND diff is enabled (default) THEN the shell tab SHALL run `git status -sb` and `git diff --stat` on open.
 6. WHEN tab colors are enabled (default) THEN all tabs of a project SHALL share a color derived deterministically from the project name.
 7. WHEN launching into a new window THEN the system SHALL finish by focusing the first tab.
@@ -48,3 +48,9 @@ A launcher that finds recently active project folders and opens them as workspac
 1. The system SHALL provide an installer that creates a Desktop `.lnk` ("Workspace Picker") targeting `powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File <script>` with the Windows Terminal icon.
 2. WHEN `-Project <name>` is passed to the installer THEN the shortcut SHALL launch that project directly.
 3. Re-running the installer SHALL overwrite the shortcut (idempotent).
+
+### R9. Window per project, compact titles
+1. WHEN several projects are launched THEN each SHALL open in its own new Windows Terminal window (one `wt -w new` call per project); `-Window <id>` SHALL instead put all tabs in that window.
+2. Tab titles SHALL be short: `cc:<project>` for the Claude tab and `sh:<scope>` for others. Detection SHALL also accept the legacy `claude-code-` / `shell-` prefixes so tabs opened by older versions still show as open.
+3. WHEN a selected project already has an open `cc:`/`sh:` tab THEN launching it SHALL bring that tab's window to the foreground instead of opening a second copy; the remaining projects SHALL launch normally. `-DryRun` SHALL print `FOCUS (already open): <name>` for these.
+4. Shift+Launch in the picker SHALL skip that check and open a new window even if the project is already open.

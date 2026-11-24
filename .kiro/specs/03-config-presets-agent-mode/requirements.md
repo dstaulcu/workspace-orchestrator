@@ -31,10 +31,19 @@ Defaults and per-project behavior are data, not code. A UI-free mode lets script
 7. Agent mode SHALL never open a dialog.
 
 ### R6. Focusing open workspaces
-1. WHEN `-Focus <project>` is given THEN the system SHALL select that project's open tab (`claude-code-<project>`, else `shell-<project>`) and raise its window, without showing a UI.
+1. WHEN `-Focus <project>` is given THEN the system SHALL select that project's open tab (`cc:<project>`, else `sh:<project>`) and raise its window, without showing a UI.
 2. IF no such tab is open THEN the system SHALL warn and exit with code 1.
 3. `-List` SHALL include a boolean `running` per project.
 
 ### R5. Window targeting and switches
 1. `-Fresh`, `-NoShell`, `-NoDiff`, `-NoColor` SHALL override the corresponding defaults for one run.
 2. `-Window <id>` SHALL be passed to `wt` as `-w <id>`.
+
+### R7. Editing configuration
+1. The picker SHALL provide a Settings button that opens `config.json` or `presets.json` in the default editor; IF the file is missing THEN it SHALL be created from `config.example.json` / `presets.example.json` first.
+2. Changes SHALL apply on the next start; the picker SHALL say so.
+3. Every `config.json` / `presets.json` key SHALL be documented in the README reference tables and described in the JSON schema files; adding a key SHALL update both.
+
+### R8. Settings location
+1. `config.json`, `presets.json` and `state.json` SHALL live in `~\.config\workspace_picker\`, outside the repository.
+2. WHEN `presets.json` or `state.json` exists next to the script and not in the settings folder THEN it SHALL be moved there once (never during `-DryRun`).

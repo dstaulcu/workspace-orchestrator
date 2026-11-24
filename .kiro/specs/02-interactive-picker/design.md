@@ -47,7 +47,7 @@ WinForms event handlers are scriptblocks bound with `.GetNewClosure()`. Closures
 
 ## Persistent picker and tab switching
 
-Tab titles are unique (`claude-code-<project>`, `shell-<scope>`), so open workspaces are found by title rather than by index (`wt focus-tab -t N` breaks when tabs are closed or reordered, and only works within one window).
+Tab titles are unique (`cc:<project>`, `sh:<scope>`), so open workspaces are found by title rather than by index (`wt focus-tab -t N` breaks when tabs are closed or reordered, and only works within one window).
 
 ```mermaid
 flowchart TD

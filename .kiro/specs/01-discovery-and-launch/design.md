@@ -28,7 +28,7 @@ flowchart LR
 ## `wt` command anatomy
 
 ```
-new-tab --title "claude-code-<project>" --tabColor "#RRGGBB" --suppressApplicationTitle -d "<dir>" powershell.exe -NoExit -Command "Set-Location -LiteralPath '<dir>'\; claude --continue"
+new-tab --title "cc:<project>" --tabColor "#RRGGBB" --suppressApplicationTitle -d "<dir>" powershell.exe -NoExit -Command "Set-Location -LiteralPath '<dir>'\; claude --continue"
  ; new-tab ... ; focus-tab -t 0
 ```
 

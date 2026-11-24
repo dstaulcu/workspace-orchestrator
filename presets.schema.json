@@ -1,0 +1,19 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Workspace Orchestrator presets.json",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": ["name"],
+    "additionalProperties": false,
+    "properties": {
+      "name":       { "type": "string", "description": "Project folder name this preset applies to (case-insensitive)." },
+      "extraTabs":  { "type": "array", "items": { "type": "object", "required": ["title", "path"], "additionalProperties": false, "properties": { "title": { "type": "string" }, "path": { "type": "string" } } }, "description": "Additional shell tabs opened in other folders." },
+      "launch":     { "type": "array", "items": { "type": "object", "required": ["exe"], "additionalProperties": false, "properties": { "exe": { "type": "string" }, "args": { "type": "array", "items": { "type": "string" } } } }, "description": "Extra applications started with the project." },
+      "claudeArgs": { "type": "string", "description": "Replaces config.json claudeArgs for this project (no double quotes)." },
+      "shell":      { "type": "boolean", "description": "Override config.json shell for this project." },
+      "diff":       { "type": "boolean", "description": "Override config.json diff for this project." },
+      "tabColor":   { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$", "description": "Fixed tab color instead of the name hash." }
+    }
+  }
+}

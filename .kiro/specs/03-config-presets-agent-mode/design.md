@@ -62,7 +62,7 @@ The `-Project` fast path avoids the activity scan, so an agent that already know
     "branch": "main",
     "dirty": true,
     "running": false,
-    "githubUrl": "https://github.com/owner/repo",
+    "remoteUrl": "https://github.com/owner/repo",
     "hasClaudeHistory": true,
     "hasPreset": false
   }

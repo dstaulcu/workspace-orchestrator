@@ -1,7 +1,8 @@
 {
+  "$schema": "https://raw.githubusercontent.com/dstaulcu/workspace-orchestrator/main/config.schema.json",
   "root": "C:\\code",
   "top": 0,
-  "ignore": ["workspace_orchestrator"],
+  "ignore": [],
   "noiseDirs": [".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build", ".next", "bin", "obj", ".idea", ".vscode"],
   "maxScanFiles": 5000,
   "maxScanDepth": 6,

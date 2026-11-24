@@ -13,8 +13,8 @@
       -All [-Top N]              launch the N most recent (default 15)
       add -DryRun to print the wt command line instead of launching
 
-    Defaults come from config.json (next to this script); switches/parameters override it.
-    Per-project overrides live in presets.json. Pins and last selection live in state.json.
+    Settings live in ~\.config\workspace_picker\: config.json (defaults; switches/parameters override it),
+    presets.json (per-project overrides) and state.json (pins and last selection).
 
 .PARAMETER Root       Folder whose immediate subfolders are projects.
 .PARAMETER Top        Limit list/picker to the N most recent (0 = all). With -All: how many to launch (default 15).
@@ -29,7 +29,7 @@
 .PARAMETER NoDiff     Don't run `git status -sb; git diff --stat` in the shell tab.
 .PARAMETER NoColor    Don't set tab colors.
 .PARAMETER Focus      Bring an already-open project's tab (and its window) to the foreground; exit 1 if none is open.
-.PARAMETER Window     Value for wt's -w (e.g. 0 = most recent existing window). Default: wt's own behavior.
+.PARAMETER Window     Value for wt's -w (e.g. 0 = most recent existing window): put all tabs in that window. Default: a new window per project.
 .PARAMETER DryRun     Print the wt arguments instead of launching.
 #>
 [CmdletBinding()]
@@ -53,12 +53,20 @@ param(
 
 # ---------------------------------------------------------------- config / state
 $cfg = @{
-    root = 'C:\code'; top = 0; ignore = @('workspace_orchestrator')
+    root = 'C:\code'; top = 0; ignore = @()
     noiseDirs = @('.git','node_modules','.venv','venv','__pycache__','dist','build','.next','bin','obj','.idea','.vscode')
     maxScanFiles = 5000; maxScanDepth = 6; picker = 'Forms'
     shell = $true; diff = $true; tabColors = $true; gitInfo = $true; claudeArgs = ''; keepOpen = $true
 }
-$cfgFile = Join-Path $PSScriptRoot 'config.json'
+# Settings live outside the repo so they survive updates; files from older versions are moved over once.
+$ConfigDir = Join-Path $env:USERPROFILE '.config\workspace_picker'
+foreach ($f in 'presets.json','state.json') {
+    $old = Join-Path $PSScriptRoot $f; $new = Join-Path $ConfigDir $f
+    if ((Test-Path -LiteralPath $old) -and -not (Test-Path -LiteralPath $new) -and -not $DryRun) {
+        try { New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null; Move-Item -LiteralPath $old -Destination $new } catch { Write-Warning "Could not migrate ${f}: $_" }
+    }
+}
+$cfgFile = Join-Path $ConfigDir 'config.json'
 if (Test-Path -LiteralPath $cfgFile) {
     try { (Get-Content -LiteralPath $cfgFile -Raw | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $cfg[$_.Name] = $_.Value } }
     catch { Write-Warning "Could not parse config.json: $_" }
@@ -73,7 +81,7 @@ $wantDiff  = (-not $NoDiff)  -and [bool]$cfg.diff
 $wantColor = (-not $NoColor) -and [bool]$cfg.tabColors
 $Project = @($Project | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 
-$stateFile = Join-Path $PSScriptRoot 'state.json'
+$stateFile = Join-Path $ConfigDir 'state.json'
 $state = @{ pinned = @(); last = @() }
 if (Test-Path -LiteralPath $stateFile) {
     try {
@@ -82,12 +90,12 @@ if (Test-Path -LiteralPath $stateFile) {
     } catch { Write-Warning "Could not parse state.json: $_" }
 }
 function Save-State {
-    try { ([pscustomobject]@{ pinned = @($state.pinned); last = @($state.last) } | ConvertTo-Json) | Set-Content -LiteralPath $stateFile -Encoding UTF8 }
+    try { New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null; ([pscustomobject]@{ pinned = @($state.pinned); last = @($state.last) } | ConvertTo-Json) | Set-Content -LiteralPath $stateFile -Encoding UTF8 }
     catch { Write-Warning "Could not save state.json: $_" }
 }
 
 $presets = @()
-$presetFile = Join-Path $PSScriptRoot 'presets.json'
+$presetFile = Join-Path $ConfigDir 'presets.json'
 if (Test-Path -LiteralPath $presetFile) {
     try { $presets = @(Get-Content -LiteralPath $presetFile -Raw | ConvertFrom-Json) }
     catch { Write-Warning "Could not parse presets.json: $_" }
@@ -139,12 +147,15 @@ function Test-ClaudeHistory([string]$Dir) {
     return (Test-Path -LiteralPath (Join-Path $env:USERPROFILE ".claude\projects\$enc"))
 }
 
-# Normalize a git remote (https, ssh, scp-style) to https://github.com/<owner>/<repo>; $null for non-GitHub remotes.
-function ConvertTo-GitHubUrl([string]$Remote) {
-    if ($Remote -match '^\s*(?:git@|ssh://git@|git://|https?://(?:[^@/]+@)?)github\.com[:/]+([^/\s]+)/([^/\s]+?)(?:\.git)?/?\s*$') {
-        return "https://github.com/$($Matches[1])/$($Matches[2])"
-    }
-    return $null
+# Normalize a git remote (https, ssh://, git://, scp-style) to a browsable https://<host>/<path> URL
+# (GitHub, GitLab, Bitbucket, Azure DevOps, self-hosted...). $null for local-path / unparseable remotes.
+function ConvertTo-RemoteWebUrl([string]$Remote) {
+    $r = $Remote.Trim()
+    if ($r -match '^https?://(?:[^@/]+@)?([^/\s]+)/(.+?)(?:\.git)?/?$') { $h = $Matches[1]; $p = $Matches[2] }
+    elseif ($r -match '^(?:ssh|git)://(?:[^@/]+@)?([^/:\s]+)(?::\d+)?/(.+?)(?:\.git)?/?$') { $h = $Matches[1]; $p = $Matches[2] }
+    elseif ($r -match '^(?:[^@/\s]+@)?([^/:\s]+):(?!//)(.+?)(?:\.git)?/?$' -and $r -notmatch '^[A-Za-z]:[\\/]') { $h = $Matches[1]; $p = $Matches[2] }
+    else { return $null }
+    return "https://$h/$($p.TrimStart('/'))"
 }
 
 function Get-GitInfo([string]$Dir) {
@@ -153,11 +164,11 @@ function Get-GitInfo([string]$Dir) {
     try {
         $branch = [string](& git -C $Dir branch --show-current 2>$null)
         $dirty = [bool](& git -C $Dir status --porcelain 2>$null | Select-Object -First 1)
-        # Prefer "origin"; otherwise the first remote that points at GitHub.
+        # Prefer "origin"; otherwise the first remote with a browsable URL.
         $remotes = @(& git -C $Dir remote 2>$null)
         $ordered = @($remotes | Where-Object { $_ -eq 'origin' }) + @($remotes | Where-Object { $_ -ne 'origin' })
         foreach ($rn in $ordered) {
-            $u = ConvertTo-GitHubUrl ([string](& git -C $Dir remote get-url $rn 2>$null))
+            $u = ConvertTo-RemoteWebUrl ([string](& git -C $Dir remote get-url $rn 2>$null))
             if ($u) { $url = $u; break }
         }
     } catch { }
@@ -187,7 +198,7 @@ function Get-TabColor([string]$Name) {
 }
 
 # ---------------------------------------------------------------- find / focus open tabs (UI Automation)
-# Tab titles are unique and predictable (claude-code-<project>, shell-<scope>), so we can find
+# Tab titles are short, unique and predictable (cc:<project>, sh:<scope>; the older claude-code-/shell- prefixes still match), so we can find
 # them in ANY Windows Terminal window, select the tab, and raise its window. No tab indexes.
 function Get-TerminalTabs {
     try {
@@ -203,9 +214,9 @@ function Get-TerminalTabs {
     } catch { Write-Verbose "UI Automation unavailable: $_" }
 }
 
-# Project names that currently have a claude-code-<name> or shell-<name> tab open.
+# Project names that currently have a cc:<name> or sh:<name> tab open (legacy claude-code-/shell- prefixes too).
 function Get-RunningNames {
-    @(Get-TerminalTabs | ForEach-Object { if ($_.Title -match '^(claude-code|shell)-(.+)$') { $Matches[2] } } | Select-Object -Unique)
+    @(Get-TerminalTabs | ForEach-Object { if ($_.Title -match '^(?:cc:|sh:|claude-code-|shell-)(.+)$') { $Matches[1] } } | Select-Object -Unique)
 }
 
 # Select the project's harness tab (else its shell tab) and raise the window. Returns $true if found.
@@ -222,8 +233,8 @@ public static class WoWin {
 '@
     }
     $tabs = @(Get-TerminalTabs)
-    $hit = $tabs | Where-Object { $_.Title -ieq "claude-code-$Name" } | Select-Object -First 1
-    if (-not $hit) { $hit = $tabs | Where-Object { $_.Title -ieq "shell-$Name" } | Select-Object -First 1 }
+    $hit = $tabs | Where-Object { $_.Title -ieq "cc:$Name" -or $_.Title -ieq "claude-code-$Name" } | Select-Object -First 1
+    if (-not $hit) { $hit = $tabs | Where-Object { $_.Title -ieq "sh:$Name" -or $_.Title -ieq "shell-$Name" } | Select-Object -First 1 }
     if (-not $hit) { return $false }
     try { $hit.Tab.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select() } catch { }
     $h = [IntPtr]$hit.Window.Current.NativeWindowHandle
@@ -267,6 +278,11 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
         Running = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
         Clock   = [System.Diagnostics.Stopwatch]::StartNew()
         Remote  = @{}
+        ConfigDir = $ConfigDir
+        ConfigFile = Join-Path $ConfigDir 'config.json'
+        ConfigExample = Join-Path $PSScriptRoot 'config.example.json'
+        PresetFile = Join-Path $ConfigDir 'presets.json'
+        PresetExample = Join-Path $PSScriptRoot 'presets.example.json'
     }
     foreach ($r in $Rows) { if ($r.RemoteUrl) { $ctx.Remote[$r.Path] = $r.RemoteUrl } }
     foreach ($p in $state.pinned) { [void]$ctx.Pinned.Add($p) }
@@ -288,25 +304,25 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
     $lv.View = 'Details'; $lv.CheckBoxes = $true; $lv.FullRowSelect = $true; $lv.GridLines = $true; $lv.HideSelection = $false
     $lv.Location = New-Object System.Drawing.Point(12, 44); $lv.Size = New-Object System.Drawing.Size(1016, 500)
     $lv.Anchor = 'Top,Bottom,Left,Right'
-    # Path comes before the git-only columns (Branch, State, GitHub) because not every project is a repo.
-    # The GitHub link column index is stored in $ctx.GhCol (set with $colHelp below); keep it, $colHelp and the
+    # Path comes before the git-only columns (Branch, State, Remote) because not every project is a repo.
+    # The Remote link column index is stored in $ctx.RemoteCol (set with $colHelp below); keep it, $colHelp and the
     # SubItems.Add order in the list fill in sync if you reorder.
-    foreach ($col in @(@('Project', 200), @('Open', 45), @('Last active', 85), @('When', 115), @('Path', 230), @('Branch', 110), @('State', 55), @('GitHub', 160))) {
+    foreach ($col in @(@('Project', 200), @('Open', 45), @('Last active', 85), @('When', 115), @('Path', 230), @('Branch', 110), @('State', 55), @('Remote', 160))) {
         [void]$lv.Columns.Add($col[0], $col[1])
     }
 
     # ListView column headers have no built-in tooltips, so hit-test the mouse against the header strip.
     $colHelp = @(
         "Project: folder name under the root.`n$([char]0x2605) = pinned (kept at the top). Green row = already open in a terminal.",
-        "Open: $([char]0x25CF) means a claude-code-<project> or shell-<project> tab is open in some Windows Terminal window.`nHighlight the row and click Switch to bring it forward.",
+        "Open: $([char]0x25CF) means a cc:<project> or sh:<project> tab is open in some Windows Terminal window.`nHighlight the row and click Switch to bring it forward.",
         "Last active: how long ago the project's latest git commit was`n(or its newest file change if it isn't a git repo).",
         "When: exact date and time of that last activity.",
         "Path: full folder path of the project.",
         "Branch: the current git branch (blank if not a git repo).",
         "State: 'dirty' = uncommitted changes (modified, staged or untracked files); 'clean' = nothing to commit;`nblank = not a git repo. Does not show unpushed commits.",
-        "GitHub: owner/repo of the project's GitHub remote (origin preferred). Click it to open the repository in your browser.`nBlank if the project has no GitHub remote."
+        "Remote: the project's git remote (origin preferred) on any host - owner/repo for GitHub, host/path otherwise. Click it to open the repository in your browser.`nBlank if the project has no remote."
     )
-    $ctx.GhCol = 7
+    $ctx.RemoteCol = 7
     $tip = New-Object System.Windows.Forms.ToolTip
     $ctx.TipCol = -1
     $lv.Add_MouseMove({
@@ -325,17 +341,17 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
             $ctx.TipCol = $col
             if ($col -ge 0) { $tip.Show($colHelp[$col], $lv, $e.X + 12, $headerH + 6, 12000) } else { $tip.Hide($lv) }
         }
-        # Hand cursor over a clickable GitHub link cell.
+        # Hand cursor over a clickable Remote link cell.
         $hit = $lv.HitTest($e.X, $e.Y)
         $overLink = $false
-        if ($hit.Item -and $hit.SubItem -and $hit.Item.SubItems.IndexOf($hit.SubItem) -eq $ctx.GhCol -and $ctx.Remote.ContainsKey([string]$hit.Item.Tag)) { $overLink = $true }
+        if ($hit.Item -and $hit.SubItem -and $hit.Item.SubItems.IndexOf($hit.SubItem) -eq $ctx.RemoteCol -and $ctx.Remote.ContainsKey([string]$hit.Item.Tag)) { $overLink = $true }
         if ($overLink) { $lv.Cursor = [System.Windows.Forms.Cursors]::Hand } else { $lv.Cursor = [System.Windows.Forms.Cursors]::Default }
     }.GetNewClosure())
-    # Clicking a GitHub cell opens that repository.
+    # Clicking a Remote cell opens that repository.
     $lv.Add_MouseClick({
         param($s, $e)
         $hit = $lv.HitTest($e.X, $e.Y)
-        if ($hit.Item -and $hit.SubItem -and $hit.Item.SubItems.IndexOf($hit.SubItem) -eq $ctx.GhCol) {
+        if ($hit.Item -and $hit.SubItem -and $hit.Item.SubItems.IndexOf($hit.SubItem) -eq $ctx.RemoteCol) {
             $url = $ctx.Remote[[string]$hit.Item.Tag]
             if ($url) { try { Start-Process $url } catch { $status.Text = "Could not open $url" } }
         }
@@ -371,6 +387,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
         $b.Location = New-Object System.Drawing.Point($x, 580); $b.Anchor = 'Bottom,Right'
         $b
     }
+    $btnSettings = New-Btn 'Settings' 372
     $btnRefresh = New-Btn 'Refresh' 480
     $btnPin     = New-Btn 'Pin / Unpin' 590
     $btnSwitch  = New-Btn 'Switch' 700
@@ -378,17 +395,18 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
     $btnClose   = New-Btn 'Close' 920
     $btnClose.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
     $form.AcceptButton = $btnGo; $form.CancelButton = $btnClose
-    $form.Controls.AddRange(@($lbl, $filterBox, $hint, $lv, $status, $help, $chkFresh, $chkKeep, $btnRefresh, $btnPin, $btnSwitch, $btnGo, $btnClose))
+    $form.Controls.AddRange(@($lbl, $filterBox, $hint, $lv, $status, $help, $chkFresh, $chkKeep, $btnSettings, $btnRefresh, $btnPin, $btnSwitch, $btnGo, $btnClose))
 
     $ctrlTip = New-Object System.Windows.Forms.ToolTip
     $ctrlTip.InitialDelay = 400; $ctrlTip.AutoPopDelay = 12000
     $ctrlTip.SetToolTip($filterBox, 'Type to narrow the list by project name or path. Checked projects stay checked while you filter.')
     $ctrlTip.SetToolTip($chkFresh, 'Start plain "claude" instead of "claude --continue", even for projects with earlier sessions.')
     $ctrlTip.SetToolTip($chkKeep, 'Leave this picker open after launching so you can launch more or Switch to open workspaces. Untick to close after Launch.')
+    $ctrlTip.SetToolTip($btnSettings, 'Edit config.json (global defaults) or presets.json (per-project overrides) in your default editor. Changes apply the next time the picker starts.')
     $ctrlTip.SetToolTip($btnRefresh, 'Re-check which projects have tabs open in Windows Terminal (also happens when you return to this window).')
     $ctrlTip.SetToolTip($btnPin, 'Pin or unpin the highlighted projects. Pinned projects (star) stay at the top of the list and are remembered.')
     $ctrlTip.SetToolTip($btnSwitch, 'Bring the highlighted project''s open tab and its terminal window to the foreground. Works for projects marked open.')
-    $ctrlTip.SetToolTip($btnGo, 'Open the checked projects (or the highlighted one) in one new Windows Terminal window: a Claude Code tab and a shell tab each.')
+    $ctrlTip.SetToolTip($btnGo, 'Open the checked projects (or the highlighted one), each in its own new Windows Terminal window with a Claude Code tab and a shell tab. Projects already open are brought to the front instead; hold Shift while clicking to open a new copy anyway.')
     $ctrlTip.SetToolTip($btnClose, 'Close the picker without launching anything.')
 
     $green = [System.Drawing.Color]::FromArgb(222, 245, 226)
@@ -412,17 +430,17 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
             if ($r.Dirty -eq $true) { $st = 'dirty' } elseif ($r.Dirty -eq $false) { $st = 'clean' }
             [void]$it.SubItems.Add($open); [void]$it.SubItems.Add($r.Relative); [void]$it.SubItems.Add($r.LastActive)
             $gh = ''
-            if ($r.RemoteUrl) { $gh = $r.RemoteUrl -replace '^https://github\.com/', '' }
+            if ($r.RemoteUrl) { $gh = ($r.RemoteUrl -replace '^https://', '') -replace '^github\.com/', '' }
             [void]$it.SubItems.Add($r.Path); [void]$it.SubItems.Add([string]$r.Branch); [void]$it.SubItems.Add($st); [void]$it.SubItems.Add($gh)
             $it.Tag = $r.Path
-            # Per-cell styling so the GitHub cell can look like a link; the green "open" tint is applied to every cell.
+            # Per-cell styling so the Remote cell can look like a link; the green "open" tint is applied to every cell.
             $it.UseItemStyleForSubItems = $false
             $bg = [System.Drawing.SystemColors]::Window
             if ($isOpen) { $bg = $green }
             foreach ($sub in $it.SubItems) { $sub.BackColor = $bg }
             if ($gh) {
-                $it.SubItems[$ctx.GhCol].ForeColor = [System.Drawing.Color]::FromArgb(0, 102, 204)
-                $it.SubItems[$ctx.GhCol].Font =New-Object System.Drawing.Font($lv.Font, [System.Drawing.FontStyle]::Underline)
+                $it.SubItems[$ctx.RemoteCol].ForeColor = [System.Drawing.Color]::FromArgb(0, 102, 204)
+                $it.SubItems[$ctx.RemoteCol].Font =New-Object System.Drawing.Font($lv.Font, [System.Drawing.FontStyle]::Underline)
             }
             $it.Checked = $ctx.Checked.Contains($r.Path)
             [void]$lv.Items.Add($it)
@@ -453,6 +471,24 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
     }.GetNewClosure())
     $filterBox.Add_TextChanged({ & $fill }.GetNewClosure())
     $btnRefresh.Add_Click({ & $refresh }.GetNewClosure())
+    # Settings: open the JSON files in the default editor (created from the example files if missing).
+    $menu = New-Object System.Windows.Forms.ContextMenuStrip
+    $miCfg = $menu.Items.Add('Edit config.json (global defaults)')
+    $miPre = $menu.Items.Add('Edit presets.json (per-project overrides)')
+    $miCfg.Add_Click({
+        try {
+            New-Item -ItemType Directory -Force -Path $ctx.ConfigDir | Out-Null
+            if (-not (Test-Path -LiteralPath $ctx.ConfigFile) -and (Test-Path -LiteralPath $ctx.ConfigExample)) { Copy-Item -LiteralPath $ctx.ConfigExample -Destination $ctx.ConfigFile }
+            Start-Process -FilePath $ctx.ConfigFile; $status.Text = 'Opened config.json. Restart the picker to apply changes.' } catch { $status.Text = "Could not open config.json: $_" }
+    }.GetNewClosure())
+    $miPre.Add_Click({
+        try {
+            New-Item -ItemType Directory -Force -Path $ctx.ConfigDir | Out-Null
+            if (-not (Test-Path -LiteralPath $ctx.PresetFile) -and (Test-Path -LiteralPath $ctx.PresetExample)) { Copy-Item -LiteralPath $ctx.PresetExample -Destination $ctx.PresetFile }
+            Start-Process -FilePath $ctx.PresetFile; $status.Text = 'Opened presets.json. Restart the picker to apply changes.'
+        } catch { $status.Text = "Could not open presets.json: $_" }
+    }.GetNewClosure())
+    $btnSettings.Add_Click({ $menu.Show($btnSettings, (New-Object System.Drawing.Point(0, $btnSettings.Height))) }.GetNewClosure())
     $btnPin.Add_Click({
         $paths = @($lv.SelectedItems | ForEach-Object { [string]$_.Tag })
         foreach ($p in $paths) { if ($ctx.Pinned.Contains($p)) { [void]$ctx.Pinned.Remove($p) } else { [void]$ctx.Pinned.Add($p) } }
@@ -473,7 +509,8 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
         if ($ctx.Checked.Count -eq 0) { foreach ($i in $lv.SelectedItems) { [void]$ctx.Checked.Add([string]$i.Tag) } }
         if ($ctx.Checked.Count -eq 0) { $status.Text = 'Check at least one project to launch.'; return }
         $paths = @($ctx.Checked)
-        & $OnLaunch $paths $chkFresh.Checked @($ctx.Pinned)
+        $force = [bool]([System.Windows.Forms.Control]::ModifierKeys -band [System.Windows.Forms.Keys]::Shift)   # Shift+Launch = open a new copy even if already open
+        & $OnLaunch $paths $chkFresh.Checked @($ctx.Pinned) $force
         if ($chkKeep.Checked) {
             $ctx.Checked.Clear()
             & $fill
@@ -497,11 +534,15 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
 }
 
 # ---------------------------------------------------------------- launch (build + start wt)
-function Invoke-Launch($Selected, [bool]$FreshRun, [bool]$Remember) {
-    $clauses = @()
+function Invoke-Launch($Selected, [bool]$FreshRun, [bool]$Remember, [bool]$ForceNew = $false) {
+    $groups = @()
     $extraApps = @()
+    # Projects that already have a tab open are brought to the foreground instead of being launched a second time.
+    $open = @(); if (-not $ForceNew) { $open = @(Get-RunningNames) }
+    $toFocus = @()
     foreach ($p in $Selected) {
         if (-not (Test-Path -LiteralPath $p.Path)) { Write-Warning "Directory not found: $($p.Path)"; continue }
+        if ($open -contains $p.Name) { $toFocus += $p.Name; continue }
         $preset = Get-Preset $p.Name
 
         # Per-project overrides from presets.json fall back to the global settings.
@@ -515,38 +556,48 @@ function Invoke-Launch($Selected, [bool]$FreshRun, [bool]$Remember) {
         $parts = @('claude')
         if ((Test-ClaudeHistory $p.Path) -and -not $FreshRun) { $parts += '--continue' }
         if ($cArgs.Trim()) { $parts += ($cArgs.Trim() -replace ';', '\;') }   # args must not contain double quotes
-        # Tab titles: harness tab = "<harness>-<project>", every other tab = "shell-<scope>".
-        $clauses += New-TabClause "claude-code-$($p.Name)" $p.Path ($parts -join ' ') $color
+        # Tab titles: Claude tab = "cc:<project>", every other tab = "sh:<scope>" (kept short; detection depends on them).
+        $pc = @()
+        $pc += New-TabClause "cc:$($p.Name)" $p.Path ($parts -join ' ') $color
 
         if ($pShell) {
             $shellCmd = $null
             if ($pDiff -and (Test-Path -LiteralPath (Join-Path $p.Path '.git'))) { $shellCmd = 'git status -sb\; git diff --stat' }
-            $clauses += New-TabClause "shell-$($p.Name)" $p.Path $shellCmd $color
+            $pc += New-TabClause "sh:$($p.Name)" $p.Path $shellCmd $color
         }
         if ($preset) {
             foreach ($t in @($preset.extraTabs)) {
                 if (-not $t) { continue }
                 if (-not (Test-Path -LiteralPath $t.path)) { Write-Warning "Directory not found: $($t.path)"; continue }
-                $clauses += New-TabClause "shell-$($t.title)" $t.path $null $color
+                $pc += New-TabClause "sh:$($t.title)" $t.path $null $color
             }
             foreach ($l in @($preset.launch)) { if ($l) { $extraApps += $l } }
         }
+        $groups += ,$pc
     }
-    if ($clauses.Count -eq 0) { return }
+    if ($groups.Count -eq 0 -and -not $toFocus.Count) { return }
 
-    $prefix = ''
+    # Default: every project gets its OWN new terminal window (one wt call each). With -Window <id>, all tabs go to that window.
     $newWindow = (-not $Window) -or ($Window -eq 'new')
-    if ($Window) { $prefix = "-w $Window " }
-    if ($newWindow) { $clauses += 'focus-tab -t 0' }   # skipped when attaching to an existing window
-    $wtArgs = $prefix + ($clauses -join ' ; ')
+    $calls = @()
+    if (-not $groups.Count) { }
+    elseif ($newWindow) {
+        foreach ($g in $groups) { $calls += "-w new " + (($g + 'focus-tab -t 0') -join ' ; ') }
+    } else {
+        $calls += "-w $Window " + ((@($groups | ForEach-Object { $_ })) -join ' ; ')
+    }
 
     if ($Remember -and -not $DryRun) { $state.last = @($Selected | ForEach-Object { $_.Path }); Save-State }
     if ($DryRun) {
-        Write-Output $wtArgs
+        foreach ($n in $toFocus) { Write-Output "FOCUS (already open): $n" }
+        foreach ($c in $calls) { Write-Output $c }
         foreach ($a in $extraApps) { Write-Output "LAUNCH: $($a.exe) $(@($a.args) -join ' ')" }
         return
     }
-    Start-Process -FilePath 'wt.exe' -ArgumentList $wtArgs
+    foreach ($c in $calls) { Start-Process -FilePath 'wt.exe' -ArgumentList $c; if ($calls.Count -gt 1) { Start-Sleep -Milliseconds 400 } }
+    # Raise already-open projects last (after any new windows have appeared) so they end up in front.
+    if ($toFocus.Count -and $calls.Count) { Start-Sleep -Milliseconds 1200 }
+    foreach ($n in $toFocus) { [void](Switch-ToProject $n) }
     foreach ($a in $extraApps) {
         if (-not (Test-Path -LiteralPath $a.exe)) { Write-Warning "Executable not found: $($a.exe)"; continue }
         if ($a.args) { Start-Process -FilePath $a.exe -ArgumentList @($a.args) } else { Start-Process -FilePath $a.exe }
@@ -613,7 +664,7 @@ if ($List) {
         [pscustomobject]@{
             name = $_.Name; path = $_.Path
             lastActive = $(if ($_.LastActiveDt) { $_.LastActiveDt.ToString('o') } else { $null })
-            pinned = $_.Pinned; isGit = $_.IsGit; branch = $_.Branch; dirty = $_.Dirty; githubUrl = $_.RemoteUrl
+            pinned = $_.Pinned; isGit = $_.IsGit; branch = $_.Branch; dirty = $_.Dirty; remoteUrl = $_.RemoteUrl
             running = [bool]($running | Where-Object { $_ -ieq $n })
             hasClaudeHistory = $_.HasHistory; hasPreset = $_.HasPreset
         } })
@@ -632,10 +683,10 @@ if ($All) {
 } else {
     # Callbacks stay as scriptblocks defined HERE so they keep script scope when invoked from WinForms closures.
     $onLaunch = {
-        param($paths, $fresh, $pins)
+        param($paths, $fresh, $pins, $force)
         $state.pinned = @($pins)
         $sel = @(Sort-Projects @($rows | Where-Object { $paths -contains $_.Path }))
-        Invoke-Launch $sel ([bool]$fresh -or [bool]$Fresh) $true
+        Invoke-Launch $sel ([bool]$fresh -or [bool]$Fresh) $true ([bool]$force)
         if (-not $DryRun) { Save-State }
     }
     $onSwitch  = { param($name) Switch-ToProject $name }

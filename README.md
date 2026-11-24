@@ -58,7 +58,7 @@ flowchart LR
     D["Discover<br/>project folders"] --> R["Rank<br/>by recent activity"]
     R --> P["Pick<br/>(UI) or name them<br/>(script / agent)"]
     P --> B["Build<br/>one wt command"]
-    B --> L["Launch<br/>one window, N×2 tabs"]
+    B --> L["Launch<br/>one window per project, 2+ tabs each"]
 ```
 
 What you get after picking, say, three projects:
@@ -93,7 +93,7 @@ flowchart TB
 | Keep favorites at the top | **Pin** in the picker |
 | Re-open yesterday's set | Last selection is pre-checked |
 | Find an already-open workspace among many terminal windows | Keep the picker open; **Switch** raises the right tab and window |
-| Jump from a project to its GitHub repo | Click the **GitHub** column (owner/repo) in the picker |
+| Jump from a project to its remote repo | Click the **Remote** column (owner/repo on GitHub, host/path elsewhere) in the picker |
 | Know at a glance which repo has uncommitted work | Branch + dirty/clean columns; shell tab shows `git status` and a diff summary on open |
 | Tell projects apart in the tab strip | Stable per-project tab colors |
 | Resume a Claude conversation automatically | `--continue` is used only when a prior session exists |
@@ -126,7 +126,7 @@ By default it treats each immediate subfolder of `C:\code` as a project. Change 
 
 ## Using the picker
 
-Check the projects you want, press **Launch** (or Enter). Type in the filter box to narrow the list. Select a row and click **Pin / Unpin** to keep it at the top. **Fresh sessions** starts plain `claude` instead of `claude --continue`. Close launches nothing.
+Check the projects you want, press **Launch** (or Enter). Type in the filter box to narrow the list. Select a row and click **Pin / Unpin** to keep it at the top. **Fresh sessions** starts plain `claude` instead of `claude --continue`. If a checked project is already open in a terminal, Launch brings its window to the front instead of opening a second copy (hold **Shift** while clicking Launch to open a new one anyway). Close launches nothing.
 
 ### Stay open and jump between workspaces
 
@@ -135,14 +135,14 @@ The picker stays open after launching (untick **Keep open after launch**, or set
 ```mermaid
 flowchart LR
     P["Picker (stays open)"] -- "Refresh / on return" --> UIA["Windows UI Automation<br/>reads tab titles in every<br/>Windows Terminal window"]
-    UIA -- "claude-code-api-server<br/>shell-api-server ..." --> P
+    UIA -- "cc:api-server<br/>sh:api-server ..." --> P
     P -- "Switch" --> F["Select that tab,<br/>raise its window"]
     P -- "Launch" --> N["Open new tabs"]
 ```
 
 The bottom-right **Help** line links to this repository, its open issues, and the new-issue page, so bugs and ideas are one click away.
 
-This works because every tab has a predictable title: `claude-code-<project>` for the Claude tab and `shell-<scope>` for the others. If you rename a tab or a program overrides its title, that tab won't be found.
+This works because every tab has a predictable title: `cc:<project>` for the Claude tab and `sh:<scope>` for the others. If you rename a tab or a program overrides its title, that tab won't be found.
 
 Prefer a plain list? `-Picker Grid` uses PowerShell's `Out-GridView`.
 
@@ -200,17 +200,46 @@ Three small files, each with one job:
 
 ```mermaid
 flowchart LR
-    CFG["config.json<br/>global defaults<br/>(committed)"] --> RUN(("Run"))
-    PRE["presets.json<br/>per-project overrides<br/>(yours, git-ignored)"] --> RUN
-    STA["state.json<br/>pins + last selection<br/>(auto-written, git-ignored)"] --> RUN
+    CFG["config.json<br/>global defaults"] --> RUN(("Run"))
+    PRE["presets.json<br/>per-project overrides"] --> RUN
+    STA["state.json<br/>pins + last selection<br/>(auto-written)"] --> RUN
     CLI["Command-line switches"] --> RUN
 ```
 
 Precedence: command-line switch > per-project preset > `config.json`.
 
-**`config.json`**: `root`, `top`, `ignore`, `noiseDirs`, `maxScanFiles`, `maxScanDepth`, `picker`, `shell`, `diff`, `tabColors`, `gitInfo`, `claudeArgs`, `keepOpen`.
+All three files live in `~\.config\workspace_picker\` (outside the repo, so updates never touch them; files from older versions next to the script are moved there on first run). Open `config.json` or `presets.json` from the picker with the **Settings** button, which creates them from [`config.example.json`](config.example.json) / [`presets.example.json`](presets.example.json) if missing. Changes apply the next time the picker starts. Both files have JSON schemas ([`config.schema.json`](config.schema.json), [`presets.schema.json`](presets.schema.json)) (`config.example.json` already references its schema; for `presets.json` map `presets.schema.json` in your editor's JSON settings) so editors like VS Code give hover help and validation.
 
-**`presets.json`**: copy [`presets.example.json`](presets.example.json). Per project (matched by folder name): `extraTabs` (`title` + `path`), `launch` (`exe` + `args`, extra apps), `claudeArgs`, `shell`, `diff`, `tabColor`.
+### `config.json` reference
+
+| Key | Type | Default | Meaning | Override |
+|---|---|---|---|---|
+| `root` | string | `C:\code` | Folder whose subfolders are the projects | `-Root` |
+| `top` | int | `0` | Show only the N most recent; `0` = all (with `-All`: how many to launch, `0` = 15) | `-Top` |
+| `ignore` | string[] | `[]` | Folder names to skip | `-Ignore` |
+| `noiseDirs` | string[] | `.git`, `node_modules`, `.venv`, ... | Directories skipped when scanning a non-git project for its newest file | none |
+| `maxScanFiles` | int | `5000` | Max files examined per non-git project | none |
+| `maxScanDepth` | int | `6` | Max folder depth of that scan | none |
+| `picker` | `Forms` \| `Grid` | `Forms` | Picker UI | `-Picker` |
+| `shell` | bool | `true` | Open a shell tab per project | `-NoShell`, preset |
+| `diff` | bool | `true` | Run `git status -sb; git diff --stat` in git shell tabs | `-NoDiff`, preset |
+| `tabColors` | bool | `true` | Color tabs by project name | `-NoColor`, preset `tabColor` |
+| `gitInfo` | bool | `true` | Show branch / state / remote columns | none |
+| `keepOpen` | bool | `true` | Keep the picker open after launching | picker checkbox |
+| `claudeArgs` | string | `""` | Extra `claude` arguments (no double quotes) | preset |
+
+### `presets.json` reference
+
+See [`presets.example.json`](presets.example.json). An array of objects matched to projects by folder `name`; every other key is optional.
+
+| Key | Type | Meaning |
+|---|---|---|
+| `name` | string | Project folder name (required) |
+| `extraTabs` | `{title, path}[]` | Additional shell tabs in other folders |
+| `launch` | `{exe, args[]}[]` | Extra apps started with the project |
+| `claudeArgs` | string | Replaces the global `claudeArgs` for this project |
+| `shell`, `diff` | bool | Override the global setting for this project |
+| `tabColor` | `#RRGGBB` | Fixed tab color |
 
 ## How it avoids the classic Windows Terminal traps
 
@@ -223,7 +252,7 @@ Building a multi-tab `wt` command line is fiddly. The script encodes these lesso
 
 ## Safety
 
-Launching never modifies your projects. The only file it writes is its own `state.json`. No network access, no credentials.
+Launching never modifies your projects. The only file it writes is its own `state.json` in `~\.config\workspace_picker\`. No network access, no credentials.
 
 ## Design docs
 

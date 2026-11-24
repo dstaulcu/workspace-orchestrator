@@ -27,7 +27,7 @@
 
 - [x] 8. Help links (R9): LinkLabel to repo, issues and new-issue page
 
-- [x] 9. GitHub links (R10): `ConvertTo-GitHubUrl` + remote lookup in `Get-GitInfo`, GitHub column with link styling, click-to-open, `githubUrl` in `-List`
+- [x] 9. Remote links (R10): `ConvertTo-RemoteWebUrl` + remote lookup in `Get-GitInfo`, Remote column with link styling, click-to-open, `remoteUrl` in `-List`
 
 ## Not done / ideas
 

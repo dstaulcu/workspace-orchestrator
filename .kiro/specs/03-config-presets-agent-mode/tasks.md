@@ -23,5 +23,6 @@
 ## Not done / ideas
 
 - [ ] Pester tests for precedence and the JSON contract
-- [ ] JSON schema file for `config.json` / `presets.json`
+- [x] JSON schema files (`config.schema.json`, `presets.schema.json`) + README reference tables
+- [x] Picker Settings button opens config.json / presets.json (R7)
 - [ ] Named workspace sets ("morning", "release") that map to project lists

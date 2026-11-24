@@ -21,7 +21,7 @@
   - [x] 5.1 `Install-Shortcut.ps1` (Desktop `.lnk`, hidden window, WT icon, optional `-Project`)
 - [x] 6. Verified by dry run under Windows PowerShell 5.1 (paths with spaces, `\;` placement)
 
-- [x] 7. Tab naming (issue #1, naming part): harness tab `claude-code-<project>`, other tabs `shell-<scope>`
+- [x] 7. Tab naming (issue #1, naming part): harness tab `cc:<project>`, other tabs `sh:<scope>`
 
 ## Not done / ideas
 

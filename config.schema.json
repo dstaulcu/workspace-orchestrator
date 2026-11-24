@@ -1,0 +1,22 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Workspace Orchestrator config.json",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema":      { "type": "string" },
+    "root":         { "type": "string", "default": "C:\\code", "description": "Folder whose immediate subfolders are the projects. Overridden by -Root." },
+    "top":          { "type": "integer", "minimum": 0, "default": 0, "description": "Show only the N most recent projects; 0 = all. With -All: how many to launch (0 = 15). Overridden by -Top." },
+    "ignore":       { "type": "array", "items": { "type": "string" }, "default": [], "description": "Folder names under root to skip. Overridden by -Ignore." },
+    "noiseDirs":    { "type": "array", "items": { "type": "string" }, "description": "Directory names skipped when scanning a non-git project for its newest file." },
+    "maxScanFiles": { "type": "integer", "minimum": 1, "default": 5000, "description": "Cap on files examined per non-git project when finding last activity." },
+    "maxScanDepth": { "type": "integer", "minimum": 1, "default": 6, "description": "Cap on folder depth for that scan." },
+    "picker":       { "enum": ["Forms", "Grid"], "default": "Forms", "description": "Picker UI: WinForms window or Out-GridView. Overridden by -Picker." },
+    "shell":        { "type": "boolean", "default": true, "description": "Open a shell tab per project. -NoShell overrides; a preset can override per project." },
+    "diff":         { "type": "boolean", "default": true, "description": "Run 'git status -sb; git diff --stat' in the shell tab of git repos. -NoDiff overrides; presets can override." },
+    "tabColors":    { "type": "boolean", "default": true, "description": "Color tabs by a hash of the project name. -NoColor overrides." },
+    "gitInfo":      { "type": "boolean", "default": true, "description": "Show branch, state and remote columns in the picker." },
+    "keepOpen":     { "type": "boolean", "default": true, "description": "Keep the picker open after launching." },
+    "claudeArgs":   { "type": "string", "default": "", "description": "Extra arguments for claude in every project (no double quotes). Presets can override per project." }
+  }
+}
