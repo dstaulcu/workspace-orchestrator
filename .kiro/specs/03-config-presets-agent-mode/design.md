@@ -25,7 +25,7 @@ Effective values for a project:
 | `config.json` | yes | human |
 | `presets.example.json` | yes | human (template) |
 | `presets.json` | no | human |
-| `state.json` | no | script (`pinned`, `last`) |
+| `state.json` | no | script (`last`) |
 
 ## Agent-mode flow
 
@@ -57,7 +57,6 @@ The `-Project` fast path avoids the activity scan, so an agent that already know
     "name": "api-server",
     "path": "C:\\code\\api-server",
     "lastActive": "2026-11-22T20:51:50.0000000-05:00",
-    "pinned": false,
     "isGit": true,
     "branch": "main",
     "dirty": true,

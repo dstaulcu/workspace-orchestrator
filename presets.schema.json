@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "Workspace Orchestrator presets.json",
+  "title": "Workspace Wrangler presets.json",
   "type": "array",
   "items": {
     "type": "object",

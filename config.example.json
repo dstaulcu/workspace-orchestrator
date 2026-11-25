@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/dstaulcu/workspace-orchestrator/main/config.schema.json",
+  "$schema": "https://raw.githubusercontent.com/dstaulcu/workspace-wrangler/main/config.schema.json",
   "root": "C:\\code",
   "top": 0,
   "ignore": [],
@@ -12,6 +12,8 @@
   "tabColors": true,
   "gitInfo": true,
   "keepOpen": true,
+  "checkForUpdates": true,
+  "updateCheckHours": 24,
   "refreshSeconds": 60,
   "arrangeOnLaunch": true,
   "arrangeStyle": "cascade",
