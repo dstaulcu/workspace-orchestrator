@@ -23,6 +23,8 @@
     "windowWidth":  { "type": "integer", "minimum": 300, "default": 1100, "description": "Default window width in pixels used by cascade and Reset window size (clamped to the screen)." },
     "windowHeight": { "type": "integer", "minimum": 200, "default": 750, "description": "Default window height in pixels used by cascade and Reset window size (clamped to the screen)." },
     "restoreLayouts": { "type": "boolean", "default": true, "description": "Put a project's new window where it was when you last used Settings > Save window layout (per monitor setup)." },
+    "gitOpsOrg":    { "type": "string", "default": "", "description": "Git > Create remote repository on GitHub: the organization pre-filled as owner. Blank = your own GitHub account (or the first account gh lists)." },
+    "gitOpsVisibility": { "enum": ["private", "internal", "public"], "default": "private", "description": "Git > Create remote repository on GitHub: visibility pre-selected in the dialog. 'internal' needs an organization on GitHub Enterprise." },
     "keepOpen":     { "type": "boolean", "default": true, "description": "Keep the picker open after launching." },
     "claudeArgs":   { "type": "string", "default": "", "description": "Extra arguments for claude in every project (no double quotes). Presets can override per project." }
   }

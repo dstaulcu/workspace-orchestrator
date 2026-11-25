@@ -27,7 +27,7 @@ One script, pipeline: load config/state/presets → discover project folders und
 - **Per project tabs**: Claude tab, shell tab (runs `git status -sb; git diff --stat` in git repos), plus preset `extraTabs`. Tab color is a hash of the project name unless the preset sets `tabColor`.
 - **Agent mode**: `-List` (JSON, includes `running`), `-Project a,b` (skips scan), `-All`, `-Focus <name>` (raise an open tab), `-DryRun`. Keep these free of any UI.
 - **Open-tab detection / switching** uses Windows UI Automation over `CASCADIA_HOSTING_WINDOW_CLASS` windows, matching tab titles `cc:<project>` / `sh:<scope>` (`Get-TerminalTabs`, `Get-RunningNames`, `Switch-ToProject`). Changing the tab-title scheme breaks this.
-- **WinForms handlers are closures** (`.GetNewClosure()`): they can't see script functions or `$script:` state. Share mutable state through the `$ctx` hashtable and call back into the script via scriptblocks passed to `Show-FormsPicker` (`$OnLaunch`, `$OnSwitch`, `$GetRunning`). Launching lives in `Invoke-Launch`, which focuses projects that already have an open tab instead of launching them again.
+- **WinForms handlers are closures** (`.GetNewClosure()`): they can't see script functions or `$script:` state. Share mutable state through the `$ctx` hashtable and call back into the script via scriptblocks passed to `Show-FormsPicker` (`$OnLaunch`, `$OnSwitch`, `$GetRunning`, `$OnGitOp`). Launching lives in `Invoke-Launch`, which focuses projects that already have an open tab instead of launching them again.
 
 ## `wt.exe` quoting rules (the fragile part)
 
@@ -40,4 +40,4 @@ One script, pipeline: load config/state/presets → discover project folders und
 
 ## Constraints
 
-Launching never modifies projects (only the orchestrator's own `state.json` in `~\.config\workspace_picker\`). No credentials or personal paths in committed files: settings live outside the repo, and `REQUIREMENTS.md` is git-ignored on purpose.
+Launching never modifies projects (only the orchestrator's own `state.json` in `~\.config\workspace_picker\`). The picker's **Git** menu (`Invoke-GitOp` core, `Invoke-PickerGitOp` UI, via the `$OnGitOp` callback) is the only code that changes a project, and only after the user confirms (Yes/No for `git init`, the Create dialog for `gh repo create`); `-DryRun` reports instead. Keep it that way. No credentials or personal paths in committed files: settings live outside the repo, and `REQUIREMENTS.md` is git-ignored on purpose.
