@@ -58,6 +58,7 @@ $cfg = @{
     noiseDirs = @('.git','node_modules','.venv','venv','__pycache__','dist','build','.next','bin','obj','.idea','.vscode')
     maxScanFiles = 5000; maxScanDepth = 6; picker = 'Forms'
     shell = $true; diff = $true; tabColors = $true; gitInfo = $true; claudeArgs = ''; keepOpen = $true; refreshSeconds = 60; arrangeOnLaunch = $true; arrangeStyle = 'cascade'; keepDesktopIconsClear = $true; windowWidth = 1100; windowHeight = 750; restoreLayouts = $true
+    gitOpsOrg = ''; gitOpsVisibility = 'private'
 }
 # Settings live outside the repo so they survive updates; files from older versions are moved over once.
 $ConfigDir = Join-Path $env:USERPROFILE '.config\workspace_picker'
@@ -414,6 +415,170 @@ function Switch-ToProject([string]$Name) {
     return $true
 }
 
+# ---------------------------------------------------------------- GitOps actions (picker Git menu)
+# These are the only things that change a project, and only when the picker user explicitly asks
+# (a confirmation for Initialize, the create dialog for New remote). -DryRun reports instead of running.
+function Test-GitHasCommits([string]$Dir) {
+    try { & git -C $Dir rev-parse --verify --quiet HEAD 2>$null | Out-Null; return ($LASTEXITCODE -eq 0) } catch { return $false }
+}
+
+# GitHub accounts the gh user can create repositories under: their own login, then their organizations.
+function Get-GitHubOwners {
+    if (-not (Get-Command gh -ErrorAction SilentlyContinue)) { return @() }
+    $owners = @()
+    try {
+        $me = [string](& gh api user --jq .login 2>$null)
+        if ($LASTEXITCODE -eq 0 -and $me.Trim()) { $owners += $me.Trim() }
+        $orgs = @(& gh api user/orgs --paginate --jq '.[].login' 2>$null)
+        if ($LASTEXITCODE -eq 0) { $owners += @($orgs | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ }) }
+    } catch { }
+    @($owners | Select-Object -Unique)
+}
+
+# GitHub repository names allow letters, digits, '.', '-' and '_'; anything else in a folder name becomes '-'.
+function ConvertTo-RepoName([string]$Name) { (($Name -replace '[^A-Za-z0-9._-]', '-') -replace '-{2,}', '-').Trim('-') }
+
+# Non-UI core. $Op: 'init' | 'remote'. $Opts (remote): Owner ('' = your own account), Name, Visibility, Push.
+# Returns { Ok, Message }.
+function Invoke-GitOp([string]$Op, [string]$Dir, $Opts) {
+    $r = [pscustomobject]@{ Ok = $false; Message = '' }
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) { $r.Message = 'git was not found on PATH.'; return $r }
+    $isGit = Test-Path -LiteralPath (Join-Path $Dir '.git')
+    switch ($Op) {
+        'init' {
+            if ($isGit) { $r.Message = "$Dir is already a git repository."; return $r }
+            if ($DryRun) { $r.Message = "Dry run: would run 'git init' in $Dir."; return $r }
+            $out = (& git -C $Dir init 2>&1 | Out-String).Trim()
+            if ($LASTEXITCODE -ne 0) { $r.Message = "git init failed: $out"; return $r }
+            $r.Ok = $true; $r.Message = "Initialized a local git repository in $Dir."
+        }
+        'remote' {
+            if (-not (Get-Command gh -ErrorAction SilentlyContinue)) { $r.Message = "GitHub CLI (gh) was not found. Install it from https://cli.github.com, then run 'gh auth login'."; return $r }
+            if ($isGit -and [string](& git -C $Dir remote get-url origin 2>$null)) { $r.Message = "This project already has a remote named 'origin'."; return $r }
+            $vis = ([string]$Opts.Visibility).ToLowerInvariant()
+            if (@('private','internal','public') -notcontains $vis) { $vis = 'private' }
+            $full = [string]$Opts.Name
+            if ([string]$Opts.Owner) { $full = "$($Opts.Owner)/$($Opts.Name)" }
+            $ghArgs = @('repo', 'create', $full, "--$vis", '--source', $Dir, '--remote', 'origin')
+            if ($Opts.Push) { $ghArgs += '--push' }
+            if ($DryRun) {
+                $pre = ''; if (-not $isGit) { $pre = "'git init' in $Dir, then " }
+                $r.Message = "Dry run: would run ${pre}gh $($ghArgs -join ' ')"; return $r
+            }
+            if (-not $isGit) {
+                $init = Invoke-GitOp 'init' $Dir $null
+                if (-not $init.Ok) { return $init }
+            }
+            $out = (& gh @ghArgs 2>&1 | Out-String).Trim()
+            if ($LASTEXITCODE -ne 0) {
+                $first = ($out -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -First 1)
+                $r.Message = "Could not create $full on GitHub: $first"; return $r
+            }
+            $r.Ok = $true; $r.Message = "Created $full on GitHub ($vis) and added it as origin."
+            if ($Opts.Push) { $r.Message += ' Pushed the current branch.' }
+        }
+        default { $r.Message = "Unknown git action: $Op" }
+    }
+    $r
+}
+
+# Dialog for New remote on GitHub. Returns $null (cancelled) or { Owner, Name, Visibility, Push }.
+function Show-NewRemoteDialog($OwnerForm, [string]$ProjectName, [bool]$IsGit, [bool]$HasCommits, [string[]]$Owners, [string]$DefaultOwner, [string]$DefaultVisibility) {
+    $dlg = New-Object System.Windows.Forms.Form
+    $dlg.Text = "New GitHub repository for $ProjectName"; $dlg.ClientSize = New-Object System.Drawing.Size(480, 250)
+    $dlg.FormBorderStyle = 'FixedDialog'; $dlg.MaximizeBox = $false; $dlg.MinimizeBox = $false; $dlg.StartPosition = 'CenterParent'
+    $mk = {
+        param($text, $y)
+        $l = New-Object System.Windows.Forms.Label
+        $l.Text = $text; $l.AutoSize = $true; $l.Location = New-Object System.Drawing.Point(12, ($y + 4)); $l
+    }
+    $cboOwner = New-Object System.Windows.Forms.ComboBox
+    $cboOwner.Location = New-Object System.Drawing.Point(140, 12); $cboOwner.Width = 320; $cboOwner.DropDownStyle = 'DropDown'
+    foreach ($o in $Owners) { [void]$cboOwner.Items.Add($o) }
+    $cboOwner.Text = $DefaultOwner
+    $txtName = New-Object System.Windows.Forms.TextBox
+    $txtName.Location = New-Object System.Drawing.Point(140, 44); $txtName.Width = 320; $txtName.Text = (ConvertTo-RepoName $ProjectName)
+    $cboVis = New-Object System.Windows.Forms.ComboBox
+    $cboVis.Location = New-Object System.Drawing.Point(140, 76); $cboVis.Width = 120; $cboVis.DropDownStyle = 'DropDownList'
+    foreach ($v in 'private','internal','public') { [void]$cboVis.Items.Add($v) }
+    $cboVis.SelectedItem = $DefaultVisibility; if ($cboVis.SelectedIndex -lt 0) { $cboVis.SelectedIndex = 0 }
+    $chkPush = New-Object System.Windows.Forms.CheckBox
+    $chkPush.Location = New-Object System.Drawing.Point(140, 106); $chkPush.AutoSize = $true
+    if ($HasCommits) { $chkPush.Text = 'Push the current branch'; $chkPush.Checked = $true }
+    else { $chkPush.Text = 'Push the current branch (no commits yet)'; $chkPush.Enabled = $false }
+    $summary = New-Object System.Windows.Forms.Label
+    $summary.Location = New-Object System.Drawing.Point(12, 140); $summary.Size = New-Object System.Drawing.Size(456, 60)
+    $ok = New-Object System.Windows.Forms.Button
+    $ok.Text = 'Create'; $ok.Location = New-Object System.Drawing.Point(274, 210); $ok.Size = New-Object System.Drawing.Size(90, 28)
+    $cancel = New-Object System.Windows.Forms.Button
+    $cancel.Text = 'Cancel'; $cancel.Location = New-Object System.Drawing.Point(374, 210); $cancel.Size = New-Object System.Drawing.Size(90, 28)
+    $cancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    $dlg.AcceptButton = $ok; $dlg.CancelButton = $cancel
+    $dlg.Controls.AddRange(@((& $mk 'Owner (organization):' 12), $cboOwner, (& $mk 'Repository name:' 44), $txtName, (& $mk 'Visibility:' 76), $cboVis, $chkPush, $summary, $ok, $cancel))
+    $tip = New-Object System.Windows.Forms.ToolTip
+    $tip.SetToolTip($cboOwner, 'The GitHub organization to create the repository in (pick one or type it). Leave blank for your own account. Default comes from gitOpsOrg in config.json.')
+
+    $update = {
+        $owner = $cboOwner.Text.Trim(); $full = $txtName.Text.Trim()
+        if ($owner) { $full = "$owner/$full" } else { $full = "$full (your account)" }
+        $s = "This will create $full on GitHub as $($cboVis.SelectedItem) and add it to this project as 'origin'."
+        if (-not $IsGit) { $s = "This will run 'git init' in the project, then create $full on GitHub as $($cboVis.SelectedItem) and add it as 'origin'." }
+        if ($chkPush.Checked) { $s += ' The current branch is pushed.' }
+        $summary.Text = $s
+    }.GetNewClosure()
+    $cboOwner.Add_TextChanged($update); $txtName.Add_TextChanged($update); $cboVis.Add_SelectedIndexChanged($update); $chkPush.Add_CheckedChanged($update)
+    & $update
+    $ok.Add_Click({
+        if ($txtName.Text.Trim() -notmatch '^[A-Za-z0-9._-]+$') {
+            [void][System.Windows.Forms.MessageBox]::Show($dlg, 'Repository names can use only letters, digits, ".", "-" and "_".', 'New GitHub repository', 'OK', 'Warning')
+            return
+        }
+        if ($cboOwner.Text.Trim() -and $cboOwner.Text.Trim() -notmatch '^[A-Za-z0-9-]+$') {
+            [void][System.Windows.Forms.MessageBox]::Show($dlg, 'An owner name can use only letters, digits and "-".', 'New GitHub repository', 'OK', 'Warning')
+            return
+        }
+        $dlg.DialogResult = [System.Windows.Forms.DialogResult]::OK; $dlg.Close()
+    }.GetNewClosure())
+
+    $res = $dlg.ShowDialog($OwnerForm)
+    $out = $null
+    if ($res -eq [System.Windows.Forms.DialogResult]::OK) {
+        $out = [pscustomobject]@{ Owner = $cboOwner.Text.Trim(); Name = $txtName.Text.Trim(); Visibility = [string]$cboVis.SelectedItem; Push = ($chkPush.Enabled -and $chkPush.Checked) }
+    }
+    $dlg.Dispose()
+    $out
+}
+
+# Picker side of a Git menu action: confirm, run, then refresh the row's git info in place.
+# $Row is the picker's row object (shared with the list), so updating it updates the picker.
+function Invoke-PickerGitOp([string]$Op, $Row, $OwnerForm) {
+    $isGit = Test-Path -LiteralPath (Join-Path $Row.Path '.git')
+    switch ($Op) {
+        'init' {
+            $ans = [System.Windows.Forms.MessageBox]::Show($OwnerForm, "Run 'git init' in this folder?`n`n$($Row.Path)", 'Initialize local repository', 'YesNo', 'Question')
+            if ($ans -ne [System.Windows.Forms.DialogResult]::Yes) { return 'Cancelled.' }
+            $res = Invoke-GitOp 'init' $Row.Path $null
+        }
+        'remote' {
+            if (-not (Get-Command gh -ErrorAction SilentlyContinue)) { return "GitHub CLI (gh) was not found. Install it from https://cli.github.com, then run 'gh auth login'." }
+            $OwnerForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
+            try { $owners = @(Get-GitHubOwners) } finally { $OwnerForm.Cursor = [System.Windows.Forms.Cursors]::Default }
+            $default = [string]$cfg.gitOpsOrg
+            if (-not $default -and $owners.Count) { $default = $owners[0] }
+            $opts = Show-NewRemoteDialog $OwnerForm $Row.Name $isGit ($isGit -and (Test-GitHasCommits $Row.Path)) $owners $default ([string]$cfg.gitOpsVisibility)
+            if (-not $opts) { return 'Cancelled.' }
+            $res = Invoke-GitOp 'remote' $Row.Path $opts
+        }
+        default { return "Unknown git action: $Op" }
+    }
+    if ($res.Ok) {
+        $gi = Get-GitInfo $Row.Path
+        $Row.IsGit = Test-Path -LiteralPath (Join-Path $Row.Path '.git')
+        if ($gi) { $Row.Branch = $gi.Branch; $Row.Dirty = $gi.Dirty; $Row.RemoteUrl = $gi.RemoteUrl }
+    }
+    $res.Message
+}
+
 # ---------------------------------------------------------------- wt command building
 # --- wt quoting rules (fragile!) ---
 # * The whole wt command line is ONE string, passed verbatim by Start-Process;
@@ -436,7 +601,7 @@ function New-TabClause([string]$Title, [string]$Dir, [string]$Command, [string]$
 # list of open projects comes from $GetRunning (all scriptblocks defined in the main script,
 # because WinForms handlers are closures that can't see script-scope state or functions).
 function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [bool]$InitialFresh,
-                          [bool]$KeepOpen, [scriptblock]$OnLaunch, [scriptblock]$OnSwitch, [scriptblock]$GetRunning, [int]$RefreshSeconds = 0, [scriptblock]$OnSaveLayout, [scriptblock]$OnArrange) {
+                          [bool]$KeepOpen, [scriptblock]$OnLaunch, [scriptblock]$OnSwitch, [scriptblock]$GetRunning, [int]$RefreshSeconds = 0, [scriptblock]$OnSaveLayout, [scriptblock]$OnArrange, [scriptblock]$OnGitOp) {
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
     [System.Windows.Forms.Application]::EnableVisualStyles()
@@ -459,7 +624,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
     foreach ($p in $Preselect)    { [void]$ctx.Checked.Add($p) }
 
     $form = New-Object System.Windows.Forms.Form
-    $form.Text = 'Workspace Picker'; $form.ClientSize = New-Object System.Drawing.Size(1150, 628)
+    $form.Text = 'Workspace Picker'; $form.ClientSize = New-Object System.Drawing.Size(1260, 628)
     $form.StartPosition = 'CenterScreen'; $form.KeyPreview = $true
 
     $lbl = New-Object System.Windows.Forms.Label
@@ -472,7 +637,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
 
     $lv = New-Object System.Windows.Forms.ListView
     $lv.View = 'Details'; $lv.CheckBoxes = $true; $lv.FullRowSelect = $true; $lv.GridLines = $true; $lv.HideSelection = $false
-    $lv.Location = New-Object System.Drawing.Point(12, 44); $lv.Size = New-Object System.Drawing.Size(1126, 500)
+    $lv.Location = New-Object System.Drawing.Point(12, 44); $lv.Size = New-Object System.Drawing.Size(1236, 500)
     $lv.Anchor = 'Top,Bottom,Left,Right'
     # Path comes before the git-only columns (Branch, State, Remote) because not every project is a repo.
     # The Remote link column index is stored in $ctx.RemoteCol (set with $colHelp below); keep it, $colHelp and the
@@ -535,7 +700,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
     $repoUrl = 'https://github.com/dstaulcu/workspace-orchestrator'
     $help = New-Object System.Windows.Forms.LinkLabel
     $help.Text = 'Help:  Repository  |  Open issues  |  Report a bug or request a feature'
-    $help.AutoSize = $true; $help.Location = New-Object System.Drawing.Point(670, 552); $help.Anchor = 'Bottom,Right'
+    $help.AutoSize = $true; $help.Location = New-Object System.Drawing.Point(780, 552); $help.Anchor = 'Bottom,Right'
     foreach ($l in @(@('Repository', $repoUrl), @('Open issues', "$repoUrl/issues"), @('Report a bug or request a feature', "$repoUrl/issues/new/choose"))) {
         [void]$help.Links.Add($help.Text.IndexOf($l[0]), $l[0].Length, $l[1])
     }
@@ -558,15 +723,16 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
         $b
     }
     $btnSettings = New-Btn 'Settings' 372
-    $btnArrange = New-Btn 'Arrange' 480
-    $btnRefresh = New-Btn 'Refresh' 590
-    $btnPin     = New-Btn 'Pin / Unpin' 700
-    $btnSwitch  = New-Btn 'Switch' 810
-    $btnGo      = New-Btn 'Launch' 920
-    $btnClose   = New-Btn 'Close' 1030
+    $btnGit     = New-Btn 'Git' 480
+    $btnArrange = New-Btn 'Arrange' 590
+    $btnRefresh = New-Btn 'Refresh' 700
+    $btnPin     = New-Btn 'Pin / Unpin' 810
+    $btnSwitch  = New-Btn 'Switch' 920
+    $btnGo      = New-Btn 'Launch' 1030
+    $btnClose   = New-Btn 'Close' 1140
     $btnClose.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
     $form.AcceptButton = $btnGo; $form.CancelButton = $btnClose
-    $form.Controls.AddRange(@($lbl, $filterBox, $hint, $lv, $status, $help, $chkFresh, $chkKeep, $btnSettings, $btnArrange, $btnRefresh, $btnPin, $btnSwitch, $btnGo, $btnClose))
+    $form.Controls.AddRange(@($lbl, $filterBox, $hint, $lv, $status, $help, $chkFresh, $chkKeep, $btnSettings, $btnGit, $btnArrange, $btnRefresh, $btnPin, $btnSwitch, $btnGo, $btnClose))
 
     $ctrlTip = New-Object System.Windows.Forms.ToolTip
     $ctrlTip.InitialDelay = 400; $ctrlTip.AutoPopDelay = 12000
@@ -574,6 +740,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
     $ctrlTip.SetToolTip($chkFresh, 'Start plain "claude" instead of "claude --continue", even for projects with earlier sessions.')
     $ctrlTip.SetToolTip($chkKeep, 'Leave this picker open after launching so you can launch more or Switch to open workspaces. Untick to close after Launch.')
     $ctrlTip.SetToolTip($btnSettings, 'Edit config.json (global defaults) or presets.json (per-project overrides) in your default editor (changes apply the next time the picker starts), or save the positions of your open project windows so Launch restores them.')
+    $ctrlTip.SetToolTip($btnGit, 'Git actions for the highlighted project: open its repository in your browser, initialize a local git repository, or create a new GitHub repository (in an organization you pick) and add it as origin. Also on the right-click menu of a row.')
     $ctrlTip.SetToolTip($btnArrange, 'Arrange the windows of all open projects now. Choose cascade, grid, side by side or stacked, or reset windows to the default size. Windows with a saved spot (Settings > Save window layout) go there; hold Shift while choosing to ignore saved spots.')
     $ctrlTip.SetToolTip($btnRefresh, 'Re-check which projects have tabs open in Windows Terminal (also happens when you return to this window).')
     $ctrlTip.SetToolTip($btnPin, 'Pin or unpin the highlighted projects. Pinned projects (star) stay at the top of the list and are remembered.')
@@ -681,6 +848,48 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
         }.GetNewClosure())
     }
     $btnArrange.Add_Click({ $arrMenu.Show($btnArrange, (New-Object System.Drawing.Point(0, $btnArrange.Height))) }.GetNewClosure())
+    # Git: GitOps actions for the highlighted project (also the list's right-click menu). Items are enabled
+    # only where they apply; anything that changes the project asks first (see Invoke-PickerGitOp).
+    $gitMenu = New-Object System.Windows.Forms.ContextMenuStrip
+    $miGitOpen = $gitMenu.Items.Add('Open repository in browser')
+    $miGitInit = $gitMenu.Items.Add('Initialize local repository (git init)...')
+    $miGitRemote = $gitMenu.Items.Add('Create remote repository on GitHub...')
+    $ctx.GitRow = {
+        if ($lv.SelectedItems.Count -eq 0) { return $null }
+        $path = [string]$lv.SelectedItems[0].Tag
+        $Rows | Where-Object { $_.Path -eq $path } | Select-Object -First 1
+    }.GetNewClosure()
+    $gitMenu.Add_Opening({
+        param($s, $e)
+        $row = & $ctx.GitRow
+        if (-not $row) {
+            foreach ($mi in @($miGitOpen, $miGitInit, $miGitRemote)) { $mi.Enabled = $false; $mi.ToolTipText = 'Highlight a project first.' }
+            return
+        }
+        $isGit = Test-Path -LiteralPath (Join-Path $row.Path '.git')
+        $miGitOpen.Enabled = [bool]$row.RemoteUrl
+        $miGitOpen.ToolTipText = $(if ($row.RemoteUrl) { [string]$row.RemoteUrl } else { 'This project has no remote yet.' })
+        $miGitInit.Enabled = -not $isGit
+        $miGitInit.ToolTipText = $(if ($isGit) { 'Already a git repository.' } else { "Run git init in $($row.Path)." })
+        $miGitRemote.Enabled = -not $row.RemoteUrl
+        $miGitRemote.ToolTipText = $(if ($row.RemoteUrl) { 'This project already has a remote.' } elseif ($isGit) { 'Create a GitHub repository (pick the organization) and add it as origin. Needs the GitHub CLI (gh).' } else { 'Runs git init first, then creates a GitHub repository and adds it as origin. Needs the GitHub CLI (gh).' })
+    }.GetNewClosure())
+    $miGitOpen.Add_Click({
+        $row = & $ctx.GitRow
+        if ($row -and $row.RemoteUrl) { try { Start-Process ([string]$row.RemoteUrl) } catch { $status.Text = "Could not open $($row.RemoteUrl)" } }
+    }.GetNewClosure())
+    $runGit = {
+        param($op)
+        $row = & $ctx.GitRow
+        if (-not $row) { $status.Text = 'Highlight a project first.'; return }
+        try { $status.Text = [string](& $OnGitOp $op $row $form) } catch { $status.Text = "Git action failed: $_" }
+        if ($row.RemoteUrl) { $ctx.Remote[$row.Path] = $row.RemoteUrl }
+        & $fill
+    }.GetNewClosure()
+    $miGitInit.Add_Click({ & $runGit 'init' }.GetNewClosure())
+    $miGitRemote.Add_Click({ & $runGit 'remote' }.GetNewClosure())
+    $btnGit.Add_Click({ $gitMenu.Show($btnGit, (New-Object System.Drawing.Point(0, $btnGit.Height))) }.GetNewClosure())
+    $lv.ContextMenuStrip = $gitMenu
     # Settings: open the JSON files in the default editor (created from the example files if missing).
     $menu = New-Object System.Windows.Forms.ContextMenuStrip
     $miCfg = $menu.Items.Add('Edit config.json (global defaults)')
@@ -912,7 +1121,8 @@ if ($All) {
     $getRunning = { Get-RunningNames }
     $onSaveLayout = { Save-WindowLayout }
     $onArrange = { param($style, $ignoreSaved) Invoke-ArrangeOpen ([string]$style) ([bool]$ignoreSaved) }
-    $res = Show-FormsPicker $rows $Filter @($state.last) ([bool]$Fresh) ([bool]$cfg.keepOpen) $onLaunch $onSwitch $getRunning ([int]$cfg.refreshSeconds) $onSaveLayout $onArrange
+    $onGitOp = { param($op, $row, $owner) Invoke-PickerGitOp ([string]$op) $row $owner }
+    $res = Show-FormsPicker $rows $Filter @($state.last) ([bool]$Fresh) ([bool]$cfg.keepOpen) $onLaunch $onSwitch $getRunning ([int]$cfg.refreshSeconds) $onSaveLayout $onArrange $onGitOp
     $state.pinned = @($res.Pinned)
     if (-not $DryRun) { Save-State }
 }

@@ -104,7 +104,8 @@ flowchart LR
 | Re-open yesterday's set | Last selection is pre-checked |
 | Find an already-open workspace among many terminal windows | Keep the picker open; **Switch** raises the right tab and window. It rechecks every 60 s (`refreshSeconds`) |
 | Avoid opening a project twice | Launch on an open project just raises it (Shift+Launch forces a new copy) |
-| Jump from a project to its remote repo | Click the **Remote** column (owner/repo on GitHub, host/path elsewhere) in the picker |
+| Jump from a project to its remote repo | Click the **Remote** column (owner/repo on GitHub, host/path elsewhere) in the picker, or **Git > Open repository in browser** |
+| Turn a folder into a repo, or give a repo a home on GitHub | **Git > Initialize local repository** / **Git > Create remote repository on GitHub** (pick the organization) |
 | Know at a glance which repo has uncommitted work | Branch + dirty/clean columns; shell tab shows `git status` and a diff summary on open |
 | Tell projects apart in the tab strip | Stable per-project tab colors |
 | Resume a Claude conversation automatically | `--continue` is used only when a prior session exists |
@@ -119,6 +120,7 @@ flowchart LR
 - **Windows PowerShell 5.1** (`powershell.exe`, built in)
 - [Claude Code](https://claude.com/claude-code) CLI on your `PATH` (`claude`)
 - `git` (optional; enables commit-time ranking, branch/dirty info, and the diff summary)
+- [GitHub CLI](https://cli.github.com) `gh`, signed in with `gh auth login` (optional; only for **Git > Create remote repository on GitHub**)
 
 ## Quick start
 
@@ -164,6 +166,16 @@ flowchart LR
 The bottom-right **Help** line links to this repository, its open issues, and the new-issue page, so bugs and ideas are one click away.
 
 This works because every tab has a predictable title: `cc:<project>` for the Claude tab and `sh:<scope>` for the others. If you rename a tab or a program overrides its title, that tab won't be found.
+
+### Git actions
+
+Highlight a project and click **Git** (or right-click the row) for GitOps actions. Each one is enabled only where it applies:
+
+- **Open repository in browser:** the project's remote (same as clicking the Remote column).
+- **Initialize local repository:** runs `git init` in a folder that isn't a repo yet, after you confirm.
+- **Create remote repository on GitHub:** pick the owner (your account or one of your organizations, as the GitHub CLI lists them; `gitOpsOrg` pre-fills it), the name (defaults to the folder name) and visibility (`gitOpsVisibility`, private by default), then **Create**. It runs `gh repo create <org>/<name> --source <folder> --remote origin`, pushing the current branch if you leave that ticked. A folder that isn't a repo yet gets `git init` first. Needs `gh`, signed in.
+
+With `-DryRun` the status line says what would run and nothing changes.
 
 Prefer a plain list? `-Picker Grid` uses PowerShell's `Out-GridView`.
 
@@ -252,6 +264,8 @@ All three files live in `~\.config\workspace_picker\` (outside the repo, so upda
 | `windowWidth` / `windowHeight` | int | `1100` / `750` | Default window size in pixels for Cascade and Reset window size (clamped to the screen) | none |
 | `arrangeStyle` | `cascade` \| `grid` \| `columns` \| `rows` | `cascade` | How windows are arranged (overlapping cascade, grid, side by side, stacked) | Arrange menu |
 | `restoreLayouts` | bool | `true` | Put each project's new window where you last saved it (**Settings > Save window layout**; stored per monitor setup in `layouts.json`) | none |
+| `gitOpsOrg` | string | `""` | Organization pre-filled as owner in **Git > Create remote repository on GitHub** (blank = your own account) | dialog |
+| `gitOpsVisibility` | `private` \| `internal` \| `public` | `private` | Visibility pre-selected in that dialog | dialog |
 | `refreshSeconds` | int | `60` | While the picker is open, re-check which projects have tabs open every N seconds (min 5; `0` = off) | none |
 | `claudeArgs` | string | `""` | Extra `claude` arguments (no double quotes) | preset |
 
@@ -281,6 +295,8 @@ Building a multi-tab `wt` command line is fiddly. The script encodes these lesso
 
 Launching never modifies your projects. The only file it writes is its own `state.json` in `~\.config\workspace_picker\`. No network access, no credentials.
 
+The **Git** menu is the one exception, and only when you ask: **Initialize local repository** asks before running `git init`, and **Create remote repository on GitHub** runs only when you press **Create** in its dialog. It uses your existing `gh` sign-in; the script never sees or stores a token.
+
 ## Design docs
 
 The project is described Kiro-style (requirements → design → tasks) in [`.kiro/specs/`](.kiro/specs/):
@@ -288,6 +304,7 @@ The project is described Kiro-style (requirements → design → tasks) in [`.ki
 1. [Project discovery and launch](.kiro/specs/01-discovery-and-launch/)
 2. [Interactive picker](.kiro/specs/02-interactive-picker/)
 3. [Configuration, presets and agent mode](.kiro/specs/03-config-presets-agent-mode/)
+4. [Git actions](.kiro/specs/04-gitops-actions/)
 
 ## Roadmap ideas
 

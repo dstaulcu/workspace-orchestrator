@@ -19,5 +19,7 @@
   "windowWidth": 1100,
   "windowHeight": 750,
   "restoreLayouts": true,
+  "gitOpsOrg": "",
+  "gitOpsVisibility": "private",
   "claudeArgs": ""
 }
