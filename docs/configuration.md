@@ -58,5 +58,7 @@ See [`presets.example.json`](../presets.example.json). An array of objects match
 | `extraTabs` | `{title, path}[]` | Additional shell tabs in other folders |
 | `launch` | `{exe, args[]}[]` | Extra apps started with the project |
 | `claudeArgs` | string | Replaces the global `claudeArgs` for this project |
+| `startupCommand` | string | Runs in the project's shell tab on launch (e.g. `npm run dev`) instead of the git summary; no double quotes |
+| `urls` | string[] | http(s) addresses opened in your default browser each time the project is launched (not when an already-open project is just raised) |
 | `shell`, `diff` | bool | Override the global setting for this project |
 | `tabColor` | `#RRGGBB` | Fixed tab color |

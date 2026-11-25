@@ -57,7 +57,7 @@ param(
 )
 
 # ---------------------------------------------------------------- config / state
-$AppVersion = '1.0.0'   # bump on every release; the update check compares it with the latest GitHub release tag
+$AppVersion = '1.1.0'   # bump on every release; the update check compares it with the latest GitHub release tag
 $cfg = @{
     root = 'C:\code'; top = 0; ignore = @()
     noiseDirs = @('.git','node_modules','.venv','venv','__pycache__','dist','build','.next','bin','obj','.idea','.vscode')
@@ -1475,6 +1475,11 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
         $r = @(& $selRows)[0]; if (-not $r) { return }
         & $reloadAfter (& $Actions.RenameProject $r $form)
     }.GetNewClosure()
+    $actLaunchOpts = {
+        $r = @(& $selRows)[0]; if (-not $r) { return }
+        $res = & $Actions.LaunchOptions $r $form
+        $status.Text = [string]$res.Message
+    }.GetNewClosure()
     $actIde = {
         $paths = @(& $selRows | ForEach-Object { $_.Path })
         try { $status.Text = [string](& $OnIde $paths) } catch { $status.Text = "Could not open the IDE: $_" }
@@ -1551,6 +1556,9 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
         [void]$mG.DropDownItems.Add('...')   # placeholder so the arrow shows; filled when the submenu opens
         $mG.Add_DropDownOpening($gitDropOpen)
         [void]$s.Items.Add('-')
+        $lo = $s.Items.Add('Launch options...'); $lo.ToolTipText = 'Customize how this project launches: Claude arguments, shell tab and startup command, URLs to open, tab color. Saved to presets.json.'
+        $lo.Enabled = ($sel.Count -eq 1); if ($sel.Count -ne 1) { $lo.ToolTipText = 'Highlight a single project to edit its launch options.' }
+        $lo.Tag = @{ Fn = $actLaunchOpts; A = @() }; $lo.Add_Click($menuClick)
         $rn = $s.Items.Add('Rename project...'); $rn.ToolTipText = 'Rename the project folder and carry its Claude history, preset and window position along. Close its terminal tabs first.'
         $rn.Enabled = ($sel.Count -eq 1); if ($sel.Count -ne 1) { $rn.ToolTipText = 'Highlight a single project to rename it.' }
         $rn.Tag = @{ Fn = $actRename; A = @() }; $rn.Add_Click($menuClick)
@@ -1670,7 +1678,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
 # ---------------------------------------------------------------- launch (build + start wt)
 function Invoke-Launch($Selected, [bool]$FreshRun, [bool]$Remember, [bool]$ForceNew = $false, [string]$Mode = 'both', [string]$Session = 'auto', [string]$ExtraArgs = '') {
     $groups = @(); $groupNames = @()
-    $extraApps = @(); $consumed = @()
+    $extraApps = @(); $consumed = @(); $urls = @()
     # Projects that already have a tab open are brought to the foreground instead of being launched a second time.
     $open = @(); if (-not $ForceNew) { $open = @(Get-RunningNames) }
     $toFocus = @()
@@ -1713,7 +1721,9 @@ function Invoke-Launch($Selected, [bool]$FreshRun, [bool]$Remember, [bool]$Force
 
         if (($pShell -and $Mode -eq 'both') -or $Mode -eq 'shell') {
             $shellCmd = $null
-            if ($pDiff -and (Test-Path -LiteralPath (Join-Path $p.Path '.git'))) { $shellCmd = 'git status -sb\; git diff --stat' }
+            $startup = ''; if ($preset -and $preset.startupCommand) { $startup = ([string]$preset.startupCommand -replace '"', '').Trim() }   # preset "startupCommand": runs in the shell tab instead of the git summary
+            if ($startup) { $shellCmd = ($startup -replace ';', '\;') }
+            elseif ($pDiff -and (Test-Path -LiteralPath (Join-Path $p.Path '.git'))) { $shellCmd = 'git status -sb\; git diff --stat' }
             $pc += New-TabClause "sh:$($p.Name)" $p.Path $shellCmd $color
         }
         if ($preset -and $Mode -eq 'both') {
@@ -1723,6 +1733,7 @@ function Invoke-Launch($Selected, [bool]$FreshRun, [bool]$Remember, [bool]$Force
                 $pc += New-TabClause "sh:$($t.title)" $t.path $null $color
             }
             foreach ($l in @($preset.launch)) { if ($l) { $extraApps += $l } }
+            foreach ($u in @($preset.urls)) { if ($u) { $urls += [string]$u } }   # preset "urls": opened in the default browser, once per launch
         }
         $groups += ,$pc; $groupNames += $p.Name
     }
@@ -1744,6 +1755,7 @@ function Invoke-Launch($Selected, [bool]$FreshRun, [bool]$Remember, [bool]$Force
         foreach ($n in $toFocus) { Write-Output "FOCUS (already open): $n" }
         foreach ($c in $calls) { Write-Output $c }
         foreach ($a in $extraApps) { Write-Output "LAUNCH: $($a.exe) $(@($a.args) -join ' ')" }
+        foreach ($u in @($urls | Select-Object -Unique)) { Write-Output "URL: $u" }
         return
     }
     $before = @(); if ($newWindow -and $calls.Count) { $before = @(Get-TerminalWindows | ForEach-Object { $_.Handle }) }
@@ -1755,6 +1767,11 @@ function Invoke-Launch($Selected, [bool]$FreshRun, [bool]$Remember, [bool]$Force
     foreach ($a in $extraApps) {
         if (-not (Test-Path -LiteralPath $a.exe)) { Write-Warning "Executable not found: $($a.exe)"; continue }
         if ($a.args) { Start-Process -FilePath $a.exe -ArgumentList @($a.args) } else { Start-Process -FilePath $a.exe }
+    }
+    # Only http(s) addresses are opened (never other protocol handlers or local files).
+    foreach ($u in @($urls | Select-Object -Unique)) {
+        if ($u -match '^https?://\S+$') { try { Start-Process $u } catch { Write-Warning "Could not open $u : $_" } }
+        else { Write-Warning "Ignoring URL (only http/https addresses are opened): $u" }
     }
 }
 
@@ -1951,6 +1968,114 @@ function Invoke-PickerRenameProject($Row, $OwnerForm) {
     $q = "Rename this project?`n`n$($Row.Path)`n  to`n$(Join-Path (Split-Path -Parent $Row.Path) $new)`n`nIts Claude history, preset, saved window position and selection move with it."
     if ([System.Windows.Forms.MessageBox]::Show($OwnerForm, $q, 'Rename project', 'YesNo', 'Question') -ne [System.Windows.Forms.DialogResult]::Yes) { return [pscustomobject]@{ Ok = $false; Message = 'Cancelled.' } }
     Invoke-RenameProject $Row $new $dlgRes.Note
+}
+
+# ---------------------------------------------------------------- per-project launch options (presets.json)
+# Writes one project's entry in presets.json (creating it if needed), keeping keys it does not manage (extraTabs, launch, ...).
+# $Set maps key -> value; $null, an empty string or an empty array removes the key. An entry left with only its name is dropped.
+function Save-ProjectPreset([string]$Name, [hashtable]$Set) {
+    $arr = @()
+    if (Test-Path -LiteralPath $presetFile) { foreach ($x in (Get-Content -LiteralPath $presetFile -Raw | ConvertFrom-Json)) { if ($x) { $arr += $x } } }
+    $entry = $arr | Where-Object { [string]$_.name -ieq $Name } | Select-Object -First 1
+    if (-not $entry) { $entry = [pscustomobject]@{ name = $Name }; $arr += $entry }
+    foreach ($k in $Set.Keys) {
+        $v = $Set[$k]
+        $empty = ($null -eq $v) -or (($v -is [string]) -and -not $v.Trim()) -or (($v -is [array]) -and $v.Count -eq 0)
+        if ($empty) { if ($entry.PSObject.Properties[$k]) { $entry.PSObject.Properties.Remove($k) } }
+        elseif ($entry.PSObject.Properties[$k]) { $entry.$k = $v }
+        else { $entry | Add-Member -NotePropertyName $k -NotePropertyValue $v }
+    }
+    $arr = @($arr | Where-Object { @($_.PSObject.Properties).Count -gt 1 -or [string]$_.name -ine $Name })
+    if (-not $DryRun) {
+        New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
+        ConvertTo-Json -InputObject @($arr) -Depth 8 | Set-Content -LiteralPath $presetFile -Encoding UTF8
+    }
+    $script:presets = @($arr)    # the next launch in this session sees it too
+}
+
+# Dialog: the per-project launch options. Returns $null or { ClaudeArgs, Shell, Diff, Startup, Urls, Color } (Shell/Diff: $null = default).
+function Show-LaunchOptionsDialog($OwnerForm, $Row) {
+    $cur = Get-Preset $Row.Name
+    $dlg = New-Object System.Windows.Forms.Form
+    $dlg.Text = "Launch options for $($Row.Name)"; $dlg.ClientSize = New-Object System.Drawing.Size(540, 420)
+    $dlg.FormBorderStyle = 'FixedDialog'; $dlg.MaximizeBox = $false; $dlg.MinimizeBox = $false; $dlg.StartPosition = 'CenterParent'
+    $mkLabel = { param($t, $y) $l = New-Object System.Windows.Forms.Label; $l.Text = $t; $l.AutoSize = $true; $l.Location = New-Object System.Drawing.Point(12, ($y + 4)); $l }
+    $txtArgs = New-Object System.Windows.Forms.TextBox; $txtArgs.Location = New-Object System.Drawing.Point(160, 12); $txtArgs.Width = 370; $txtArgs.Text = [string]$cur.claudeArgs
+    $cboShell = New-Object System.Windows.Forms.ComboBox; $cboShell.DropDownStyle = 'DropDownList'; $cboShell.Location = New-Object System.Drawing.Point(160, 44); $cboShell.Width = 210
+    $cboDiff = New-Object System.Windows.Forms.ComboBox; $cboDiff.DropDownStyle = 'DropDownList'; $cboDiff.Location = New-Object System.Drawing.Point(160, 76); $cboDiff.Width = 210
+    foreach ($c in @($cboShell, $cboDiff)) { foreach ($i in 'Default (from config.json)', 'On', 'Off') { [void]$c.Items.Add($i) } }
+    $cboShell.SelectedIndex = $(if ($null -eq $cur.shell) { 0 } elseif ([bool]$cur.shell) { 1 } else { 2 })
+    $cboDiff.SelectedIndex = $(if ($null -eq $cur.diff) { 0 } elseif ([bool]$cur.diff) { 1 } else { 2 })
+    $txtStart = New-Object System.Windows.Forms.TextBox; $txtStart.Location = New-Object System.Drawing.Point(160, 108); $txtStart.Width = 370; $txtStart.Text = [string]$cur.startupCommand
+    $txtUrls = New-Object System.Windows.Forms.TextBox; $txtUrls.Multiline = $true; $txtUrls.ScrollBars = 'Vertical'; $txtUrls.WordWrap = $false
+    $txtUrls.Location = New-Object System.Drawing.Point(160, 140); $txtUrls.Size = New-Object System.Drawing.Size(370, 96); $txtUrls.Text = (@($cur.urls | Where-Object { $_ }) -join "`r`n")
+    $swatch = New-Object System.Windows.Forms.Panel; $swatch.Location = New-Object System.Drawing.Point(160, 248); $swatch.Size = New-Object System.Drawing.Size(40, 24); $swatch.BorderStyle = 'FixedSingle'
+    $st = @{ Color = [string]$cur.tabColor }
+    $paint = { try { if ($st.Color) { $swatch.BackColor = [System.Drawing.ColorTranslator]::FromHtml($st.Color) } else { $swatch.BackColor = [System.Drawing.SystemColors.Control] } } catch { $swatch.BackColor = [System.Drawing.SystemColors.Control] } }.GetNewClosure()
+    $btnColor = New-Object System.Windows.Forms.Button; $btnColor.Text = 'Choose...'; $btnColor.Location = New-Object System.Drawing.Point(208, 246); $btnColor.Size = New-Object System.Drawing.Size(90, 28)
+    $btnClear = New-Object System.Windows.Forms.Button; $btnClear.Text = 'Automatic'; $btnClear.Location = New-Object System.Drawing.Point(304, 246); $btnClear.Size = New-Object System.Drawing.Size(90, 28)
+    $adv = New-Object System.Windows.Forms.Label; $adv.Location = New-Object System.Drawing.Point(12, 292); $adv.Size = New-Object System.Drawing.Size(516, 52)
+    $adv.Text = "Extra tabs in other folders and extra applications for this project are edited in presets.json (other settings in this project's entry are kept as they are)."
+    $btnFile = New-Object System.Windows.Forms.Button; $btnFile.Text = 'Open presets.json'; $btnFile.Location = New-Object System.Drawing.Point(12, 346); $btnFile.Size = New-Object System.Drawing.Size(130, 28)
+    $err = New-Object System.Windows.Forms.Label; $err.ForeColor = [System.Drawing.Color]::Firebrick; $err.Location = New-Object System.Drawing.Point(12, 350); $err.Size = New-Object System.Drawing.Size(516, 20); $err.Visible = $false
+    $ok = New-Object System.Windows.Forms.Button; $ok.Text = 'Save'; $ok.Location = New-Object System.Drawing.Point(344, 382); $ok.Size = New-Object System.Drawing.Size(90, 28)
+    $cancel = New-Object System.Windows.Forms.Button; $cancel.Text = 'Cancel'; $cancel.Location = New-Object System.Drawing.Point(440, 382); $cancel.Size = New-Object System.Drawing.Size(90, 28)
+    $cancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    $dlg.AcceptButton = $null; $dlg.CancelButton = $cancel
+    $dlg.Controls.AddRange(@((& $mkLabel 'Claude arguments:' 12), $txtArgs, (& $mkLabel 'Shell tab:' 44), $cboShell, (& $mkLabel 'Git status summary:' 76), $cboDiff, (& $mkLabel 'Shell startup command:' 108), $txtStart,
+        (& $mkLabel 'Open these URLs:' 140), $txtUrls, (& $mkLabel 'Tab color:' 248), $swatch, $btnColor, $btnClear, $adv, $btnFile, $err, $ok, $cancel))
+    $tip = New-Object System.Windows.Forms.ToolTip
+    $tip.SetToolTip($txtArgs, 'Extra arguments for claude in this project only, e.g. --model opus or --permission-mode plan (no double quotes). Replaces claudeArgs from config.json.')
+    $tip.SetToolTip($cboShell, 'Whether this project gets a shell tab next to its Claude tab.')
+    $tip.SetToolTip($cboDiff, 'Whether the shell tab starts by showing git status and a diff summary (ignored when a startup command is set).')
+    $tip.SetToolTip($txtStart, 'Runs in the shell tab when the project launches, e.g. npm run dev or docker compose up (no double quotes). Replaces the git summary.')
+    $tip.SetToolTip($txtUrls, 'One address per line (http or https). Opened in your default browser each time the project is launched, for example a dev server, tracker or dashboard.')
+    $tip.SetToolTip($btnColor, 'Pick a fixed tab color for this project.')
+    $tip.SetToolTip($btnClear, 'Go back to the automatic color (derived from the project name).')
+    $tip.SetToolTip($btnFile, 'Open presets.json in your editor for extra tabs and extra applications.')
+    $tip.SetToolTip($ok, 'Save these options to presets.json. They apply the next time the project is launched.')
+    $tip.SetToolTip($cancel, 'Close without changing anything.')
+    & $paint
+    $btnColor.Add_Click({
+        $cd = New-Object System.Windows.Forms.ColorDialog; $cd.FullOpen = $true
+        try { if ($st.Color) { $cd.Color = [System.Drawing.ColorTranslator]::FromHtml($st.Color) } } catch { }
+        if ($cd.ShowDialog($dlg) -eq [System.Windows.Forms.DialogResult]::OK) { $st.Color = ('#{0:X2}{1:X2}{2:X2}' -f $cd.Color.R, $cd.Color.G, $cd.Color.B); & $paint }
+    }.GetNewClosure())
+    $btnClear.Add_Click({ $st.Color = ''; & $paint }.GetNewClosure())
+    $btnFile.Add_Click({
+        try {
+            New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
+            if (-not (Test-Path -LiteralPath $presetFile)) { Set-Content -LiteralPath $presetFile -Value '[]' -Encoding UTF8 }
+            Start-Process -FilePath $presetFile
+        } catch { [void][System.Windows.Forms.MessageBox]::Show($dlg, "Could not open presets.json: $_", 'Launch options', 'OK', 'Warning') }
+    }.GetNewClosure())
+    $ok.Add_Click({
+        $problem = $null
+        if ($txtArgs.Text.Contains('"')) { $problem = 'Claude arguments cannot contain double quotes.' }
+        elseif ($txtStart.Text.Contains('"')) { $problem = 'The startup command cannot contain double quotes (use single quotes).' }
+        else { foreach ($u in @($txtUrls.Lines | ForEach-Object { $_.Trim() } | Where-Object { $_ })) { if ($u -notmatch '^https?://\S+$') { $problem = "Not an http(s) address: $u"; break } } }
+        if ($problem) { [void][System.Windows.Forms.MessageBox]::Show($dlg, $problem, 'Launch options', 'OK', 'Warning'); return }
+        $dlg.DialogResult = [System.Windows.Forms.DialogResult]::OK; $dlg.Close()
+    }.GetNewClosure())
+    $res = $dlg.ShowDialog($OwnerForm); $out = $null
+    if ($res -eq [System.Windows.Forms.DialogResult]::OK) {
+        $tri = { param($c) switch ($c.SelectedIndex) { 1 { $true } 2 { $false } default { $null } } }
+        $out = [pscustomobject]@{
+            ClaudeArgs = $txtArgs.Text.Trim(); Shell = (& $tri $cboShell); Diff = (& $tri $cboDiff); Startup = $txtStart.Text.Trim()
+            Urls = @($txtUrls.Lines | ForEach-Object { $_.Trim() } | Where-Object { $_ }); Color = $st.Color
+        }
+    }
+    $dlg.Dispose(); $out
+}
+
+function Invoke-PickerLaunchOptions($Row, $OwnerForm) {
+    $o = Show-LaunchOptionsDialog $OwnerForm $Row
+    if (-not $o) { return [pscustomobject]@{ Ok = $false; Message = 'Cancelled.' } }
+    try {
+        Save-ProjectPreset $Row.Name @{ claudeArgs = $o.ClaudeArgs; shell = $o.Shell; diff = $o.Diff; startupCommand = $o.Startup; urls = @($o.Urls); tabColor = $o.Color }
+        $Row.HasPreset = [bool](Get-Preset $Row.Name)
+        [pscustomobject]@{ Ok = $true; Message = "Saved launch options for $($Row.Name). They apply the next time it is launched." }
+    } catch { [pscustomobject]@{ Ok = $false; Message = "Could not save launch options: $_" } }
 }
 
 # ---------------------------------------------------------------- first run: where are the projects?
@@ -2191,7 +2316,7 @@ if ($All) {
     $onArrange = { param($style, $ignoreSaved) Invoke-ArrangeOpen ([string]$style) ([bool]$ignoreSaved) }
     $onGitOp = { param($op, $row, $form, $preset) Invoke-PickerGitOp ([string]$op) $row $form ([string]$preset) }
     $onCascade = { param($self) Invoke-CascadeFront ([int64]$self) }
-    $actions = @{ NewProject = { param($owner) Invoke-PickerNewProject $owner }; RenameProject = { param($row, $owner) Invoke-PickerRenameProject $row $owner }; ChooseRoot = { $p = Show-RootDialog @(Find-ProjectRootCandidates) "Current projects folder: $Root"; if ($p) { Set-ConfigValue 'root' $p }; $p } }
+    $actions = @{ LaunchOptions = { param($row, $owner) Invoke-PickerLaunchOptions $row $owner }; NewProject = { param($owner) Invoke-PickerNewProject $owner }; RenameProject = { param($row, $owner) Invoke-PickerRenameProject $row $owner }; ChooseRoot = { $p = Show-RootDialog @(Find-ProjectRootCandidates) "Current projects folder: $Root"; if ($p) { Set-ConfigValue 'root' $p }; $p } }
     $onIde = { param($paths) Invoke-OpenIde ([string[]]$paths) }
     $update = @{
         Current = $AppVersion

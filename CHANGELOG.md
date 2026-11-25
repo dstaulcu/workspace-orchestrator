@@ -4,7 +4,10 @@ All notable changes to Workspace Wrangler. Newest first. The picker opens this f
 and offers it after an update. Add new entries under **Unreleased** as you work; rename that heading to the
 version when you release.
 
-## Unreleased
+## 1.1.0 - 2026-11-25
+
+### Added
+- **Launch options...** on the right-click menu: edit a project's `presets.json` entry from a dialog (Claude arguments, shell tab and git summary on/off, tab color) plus two new preset fields, **`startupCommand`** (runs in the shell tab, e.g. `npm run dev`) and **`urls`** (http/https addresses opened in your default browser each time the project is launched, not when an already-open project is only raised). Other keys in the entry (extra tabs, extra apps) are preserved.
 
 ## 1.0.0 - 2026-11-25
 

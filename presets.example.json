@@ -8,6 +8,8 @@
       { "exe": "C:\\Program Files\\Mozilla Firefox\\firefox.exe", "args": ["-p", "work"] }
     ],
     "claudeArgs": "--model sonnet",
+    "startupCommand": "npm run dev",
+    "urls": ["http://localhost:3000"],
     "diff": false,
     "tabColor": "#2A7F62"
   },

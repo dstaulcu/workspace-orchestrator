@@ -10,6 +10,8 @@
       "name":       { "type": "string", "description": "Project folder name this preset applies to (case-insensitive)." },
       "extraTabs":  { "type": "array", "items": { "type": "object", "required": ["title", "path"], "additionalProperties": false, "properties": { "title": { "type": "string" }, "path": { "type": "string" } } }, "description": "Additional shell tabs opened in other folders." },
       "launch":     { "type": "array", "items": { "type": "object", "required": ["exe"], "additionalProperties": false, "properties": { "exe": { "type": "string" }, "args": { "type": "array", "items": { "type": "string" } } } }, "description": "Extra applications started with the project." },
+      "startupCommand": { "type": "string", "description": "Runs in this project's shell tab when it launches (e.g. npm run dev), instead of the git status summary. No double quotes." },
+      "urls": { "type": "array", "items": { "type": "string", "pattern": "^https?://\\S+$" }, "description": "Addresses (http/https) opened in the default browser each time this project is launched." },
       "claudeArgs": { "type": "string", "description": "Replaces config.json claudeArgs for this project (no double quotes)." },
       "shell":      { "type": "boolean", "description": "Override config.json shell for this project." },
       "diff":       { "type": "boolean", "description": "Override config.json diff for this project." },
