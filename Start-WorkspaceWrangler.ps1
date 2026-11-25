@@ -31,7 +31,7 @@
 .PARAMETER NoColor    Don't set tab colors.
 .PARAMETER Focus      Bring an already-open project's tab (and its window) to the foreground; exit 1 if none is open.
 .PARAMETER Window     Value for wt's -w (e.g. 0 = most recent existing window): put all tabs in that window. Default: a new window per project.
-.PARAMETER Cascade    Find every open workspace window, restore it if minimized, cascade them on the primary screen and bring them to the front; no UI. This is what the Install-Shortcut hotkey runs.
+.PARAMETER Cascade    Find every open workspace window, restore it if minimized, cascade them on the primary screen and bring them to the front; no UI. The picker's global hotkey (config `hotkey`) does the same.
 .PARAMETER CheckUpdate Check GitHub for a newer release, print the result as JSON and exit (no UI).
 .PARAMETER DryRun     Print the wt arguments instead of launching.
 #>
@@ -57,7 +57,7 @@ param(
 )
 
 # ---------------------------------------------------------------- config / state
-$AppVersion = '0.6.0'   # bump on every release; the update check compares it with the latest GitHub release tag
+$AppVersion = '0.6.1'   # bump on every release; the update check compares it with the latest GitHub release tag
 $cfg = @{
     root = 'C:\code'; top = 0; ignore = @()
     noiseDirs = @('.git','node_modules','.venv','venv','__pycache__','dist','build','.next','bin','obj','.idea','.vscode')
@@ -65,7 +65,7 @@ $cfg = @{
     shell = $true; diff = $true; tabColors = $true; gitInfo = $true; claudeArgs = ''; keepOpen = $true; refreshSeconds = 60; arrangeOnLaunch = $true; arrangeStyle = 'cascade'; keepDesktopIconsClear = $true; windowWidth = 1100; windowHeight = 750; restoreLayouts = $true
     checkForUpdates = $true; updateCheckHours = 24; updateRepo = 'dstaulcu/workspace-wrangler'
     gitOpsOrg = ''; gitOpsTargets = @(); gitOpsVisibility = 'private'
-    ide = 'code'; ideArgs = '-n'; git = 'git'
+    ide = 'code'; ideArgs = '-n'; git = 'git'; hotkey = 'Ctrl+Alt+W'
 }
 # Settings live outside the repo so they survive updates; files from older versions are moved over once.
 $ConfigDir = Join-Path $env:USERPROFILE '.config\workspace_wrangler'
@@ -430,6 +430,48 @@ function Invoke-CascadeFront {
     [WoWin]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero); [WoWin]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)
     [void][WoWin]::SetForegroundWindow([IntPtr][int64]$wins[-1].Handle)
     return $wins.Count
+}
+
+# Global hotkey (only while the picker is open): "Ctrl+Alt+W" -> modifiers + virtual-key, or $null if it can't be parsed.
+function ConvertTo-HotkeySpec([string]$Text) {
+    if (-not $Text -or -not $Text.Trim()) { return $null }
+    Add-Type -AssemblyName System.Windows.Forms
+    $mods = 0; $vk = 0
+    foreach ($t in ($Text -split '\+' | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
+        switch -Regex ($t) {
+            '^(ctrl|control)$' { $mods = $mods -bor 2; continue }
+            '^alt$'            { $mods = $mods -bor 1; continue }
+            '^shift$'          { $mods = $mods -bor 4; continue }
+            '^(win|windows)$'  { $mods = $mods -bor 8; continue }
+            default {
+                $name = $t; if ($name -match '^\d$') { $name = "D$name" }
+                try { $vk = [int][System.Enum]::Parse([System.Windows.Forms.Keys], $name, $true) } catch { return $null }
+            }
+        }
+    }
+    if (-not $vk -or -not $mods) { return $null }   # a bare key would steal normal typing system-wide
+    @{ Mods = [uint32]$mods; Vk = [uint32]$vk }
+}
+
+function Initialize-HotkeyType {
+    if ('WoHotkey' -as [type]) { return }
+    Add-Type -ReferencedAssemblies System.Windows.Forms -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+using System.Windows.Forms;
+public class WoHotkey : IMessageFilter {
+    [DllImport("user32.dll")] static extern bool RegisterHotKey(IntPtr h, int id, uint mods, uint vk);
+    [DllImport("user32.dll")] static extern bool UnregisterHotKey(IntPtr h, int id);
+    public event EventHandler Pressed;
+    const int Id = 0x5743;
+    public bool Register(uint mods, uint vk) { Application.AddMessageFilter(this); return RegisterHotKey(IntPtr.Zero, Id, mods | 0x4000, vk); }
+    public void Unregister() { UnregisterHotKey(IntPtr.Zero, Id); Application.RemoveMessageFilter(this); }
+    public bool PreFilterMessage(ref Message m) {
+        if (m.Msg == 0x0312 && m.WParam.ToInt32() == Id) { EventHandler h = Pressed; if (h != null) h(this, EventArgs.Empty); return true; }
+        return false;
+    }
+}
+"@
 }
 
 function Switch-ToProject([string]$Name) {
@@ -934,7 +976,7 @@ function New-TabClause([string]$Title, [string]$Dir, [string]$Command, [string]$
 # list of open projects comes from $GetRunning (all scriptblocks defined in the main script,
 # because WinForms handlers are closures that can't see script-scope state or functions).
 function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [bool]$InitialFresh,
-                          [bool]$KeepOpen, [scriptblock]$OnLaunch, [scriptblock]$OnSwitch, [scriptblock]$GetRunning, [int]$RefreshSeconds = 0, [scriptblock]$OnSaveLayout, [scriptblock]$OnArrange, [scriptblock]$OnGitOp, [hashtable]$Update, [scriptblock]$OnIde) {
+                          [bool]$KeepOpen, [scriptblock]$OnLaunch, [scriptblock]$OnSwitch, [scriptblock]$GetRunning, [int]$RefreshSeconds = 0, [scriptblock]$OnSaveLayout, [scriptblock]$OnArrange, [scriptblock]$OnGitOp, [hashtable]$Update, [scriptblock]$OnIde, [scriptblock]$OnCascade) {
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
     [System.Windows.Forms.Application]::EnableVisualStyles()
@@ -1237,6 +1279,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
     foreach ($opt in @(@('Cascade (overlapping, title bars visible)', 'cascade'), @('Tile in a grid', 'grid'), @('Side by side (columns)', 'columns'), @('Stacked (rows)', 'rows'), @('-', ''), @('Reset window size (keep positions)', 'resize'), @('Restore saved layout only', 'none'))) {
         if ($opt[0] -eq '-') { [void]$arrMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)); continue }
         $mi = $arrMenu.Items.Add($opt[0]); $style = $opt[1]
+        if ($style -eq 'cascade') { $ctx.CascadeItem = $mi }
         $mi.Add_Click({
             try {
                 $shift = [bool]([System.Windows.Forms.Control]::ModifierKeys -band [System.Windows.Forms.Keys]::Shift)
@@ -1387,7 +1430,31 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
         $t = & $Update.Start $false
         if ($t) { $ctx.UpdTask = $t; $updTimer.Start() } else { & $showUpdate (& $Update.Cached) }
     }.GetNewClosure())
+    # Global hotkey (config `hotkey`, default Ctrl+Alt+W): cascade every open workspace to the front. Works while this picker is open.
+    $hk = $null
+    $spec = ConvertTo-HotkeySpec ([string]$cfg.hotkey)
+    if ($spec) {
+        try {
+            Initialize-HotkeyType
+            $hk = New-Object WoHotkey
+            if ($hk.Register($spec.Mods, $spec.Vk)) {
+                # Pressing it cascades every open workspace, then brings the Wrangler itself up on top of them.
+                $hk.add_Pressed({
+                    try { $n = & $OnCascade; $status.Text = "Cascaded $n workspace window(s)." } catch { $status.Text = "Cascade failed: $_" }
+                    if ($form.WindowState -eq [System.Windows.Forms.FormWindowState]::Minimized) { $form.WindowState = [System.Windows.Forms.FormWindowState]::Normal }
+                    $form.TopMost = $true; $form.Activate(); $form.TopMost = $false
+                }.GetNewClosure())
+                # Make the hotkey discoverable in the app itself.
+                $hotText = [string]$cfg.hotkey
+                $hint.Text = "Launch checked projects, or highlight an open (green) one and Switch.  Hotkey: $hotText cascades all workspaces."
+                if ($ctx.CascadeItem) { $ctx.CascadeItem.ShortcutKeyDisplayString = $hotText }
+                $ctrlTip.SetToolTip($btnArrange, ($ctrlTip.GetToolTip($btnArrange) + " Hotkey $hotText cascades all open workspaces from anywhere and brings this window up on top (works while the picker is open)."))
+            } else { $hk = $null; $ctx.HotkeyNote = "Hotkey $($cfg.hotkey) is already used by another program." }
+        } catch { $hk = $null; $ctx.HotkeyNote = "Could not register hotkey $($cfg.hotkey): $_" }
+    } elseif ([string]$cfg.hotkey) { $ctx.HotkeyNote = "Hotkey '$($cfg.hotkey)' is not valid (use e.g. Ctrl+Alt+W)." }
+    if ($ctx.HotkeyNote) { $status.Text = $ctx.HotkeyNote }
     [void]$form.ShowDialog()
+    if ($hk) { try { $hk.Unregister() } catch { } }
     $timer.Dispose(); $bgTimer.Dispose(); $updTimer.Dispose()
     $null
 }
@@ -1573,6 +1640,7 @@ if ($All) {
     $onSaveLayout = { Save-WindowLayout }
     $onArrange = { param($style, $ignoreSaved) Invoke-ArrangeOpen ([string]$style) ([bool]$ignoreSaved) }
     $onGitOp = { param($op, $row, $form, $preset) Invoke-PickerGitOp ([string]$op) $row $form ([string]$preset) }
+    $onCascade = { Invoke-CascadeFront }
     $onIde = { param($paths) Invoke-OpenIde ([string[]]$paths) }
     $update = @{
         Current = $AppVersion
@@ -1584,6 +1652,6 @@ if ($All) {
         Restart = { Restart-Wrangler }
         Changelog = { Open-Changelog }
     }
-    [void](Show-FormsPicker $rows $Filter @($state.last) ([bool]$Fresh) ([bool]$cfg.keepOpen) $onLaunch $onSwitch $getRunning ([int]$cfg.refreshSeconds) $onSaveLayout $onArrange $onGitOp $update $onIde)
+    [void](Show-FormsPicker $rows $Filter @($state.last) ([bool]$Fresh) ([bool]$cfg.keepOpen) $onLaunch $onSwitch $getRunning ([int]$cfg.refreshSeconds) $onSaveLayout $onArrange $onGitOp $update $onIde $onCascade)
     if (-not $DryRun) { Save-State }
 }

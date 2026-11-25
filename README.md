@@ -23,7 +23,7 @@ A small picker that lists your project folders (newest activity first) and opens
    ```powershell
    powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Install-Shortcut.ps1
    ```
-   This puts **Workspace Wrangler** and **Wrangler - Cascade windows** (hotkey **Ctrl+Alt+W**) on your Desktop.
+   This puts one **Workspace Wrangler** shortcut on your Desktop.
 3. Double-click **Workspace Wrangler**. Projects are the subfolders of `C:\code` by default; change `root` under **Settings > Edit config.json**.
 
 To try it without installing: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Start-WorkspaceWrangler.ps1`.
@@ -45,7 +45,7 @@ Check projects and press **Launch** (or Enter). Type in the filter box to narrow
 
 **Fresh sessions** starts plain `claude` instead of `claude --continue`. **Keep open after launch** leaves the picker running. Tabs are titled `cc:<project>` and `sh:<scope>`; that is how open projects are found, so don't rename them.
 
-**Hotkey:** **Ctrl+Alt+W** (the *Wrangler - Cascade windows* shortcut; change it with `Install-Shortcut.ps1 -Hotkey`) finds all open workspaces, restores minimized ones, cascades them and brings them to the front. From a script: `Start-WorkspaceWrangler.ps1 -Cascade`.
+**Hotkey:** while the picker is open (it can be minimized), **Ctrl+Alt+W** finds all open workspaces, restores minimized ones, cascades them and brings them to the front, with the picker itself on top. The hotkey is also shown in the picker (hint line, Arrange tooltip and menu). Change it with `hotkey` in `config.json` (empty turns it off); the picker says so in the status bar if another program already owns the key. Without the picker: `Start-WorkspaceWrangler.ps1 -Cascade`.
 
 **Window layout:** new windows are cascaded (`arrangeStyle`: `cascade`, `grid`, `columns`, `rows`). **Settings > Save window layout** remembers where each open project's window is, per monitor setup, and later launches put them back.
 

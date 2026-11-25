@@ -43,6 +43,7 @@ All three files live in `~\.config\workspace_wrangler\` (outside the repo, so up
 | `gitOpsVisibility` | `private` \| `internal` \| `public` | `private` | Visibility pre-selected in that dialog | dialog |
 | `refreshSeconds` | int | `60` | While the picker is open, re-check which projects have tabs open every N seconds (min 5; `0` = off) | none |
 | `git` | string | `git` | git to use: a command on PATH, or the full path to `git.exe` (portable installs) | all git calls |
+| `hotkey` | string | `Ctrl+Alt+W` | Global hotkey while the picker is open: cascade all open workspace windows to the front (needs a modifier; empty = off) | none |
 | `ide` | string | `code` | Command the **IDE** button runs (VS Code by default; e.g. `cursor`, or a full path) | button |
 | `ideArgs` | string | `-n` | Arguments before the folder (`-n` = new window per project) | button |
 | `claudeArgs` | string | `""` | Extra `claude` arguments (no double quotes) | preset |

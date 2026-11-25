@@ -6,6 +6,12 @@ version when you release.
 
 ## Unreleased
 
+## 0.6.1 - 2026-11-24
+
+### Changed
+- The cascade hotkey (default **Ctrl+Alt+W**) is now built into the picker and works while it is open, so there is no second shortcut file or icon. Pressing it cascades every open workspace and brings the Wrangler itself up on top. Set `hotkey` in `config.json` to change it (needs a modifier; empty = off). The status bar says so if another program already owns the key. `Install-Shortcut.ps1` removes the *Wrangler - Cascade windows* shortcut that v0.6.0 created, and its `-Hotkey` / `-NoHotkey` switches are gone.
+- The hotkey is shown in the picker: in the hint line, on the **Arrange** tooltip and next to **Cascade** in the Arrange menu.
+
 ## 0.6.0 - 2026-11-24
 
 ### Added

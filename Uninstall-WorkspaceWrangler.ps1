@@ -12,7 +12,7 @@
       so a reinstall picks up where you left off.
     * Never deletes this program folder; it prints that last step for you. Terminals and projects are never touched.
 .PARAMETER RemoveSettings  Also delete the settings folder(s).
-.PARAMETER Folder          Where to look for shortcuts (default: your Desktop).
+.PARAMETER Folder          Where to look for shortcuts (default: your Desktop; the Start Menu is checked too).
 .EXAMPLE
     .\Uninstall-WorkspaceWrangler.ps1 -WhatIf          # preview
     .\Uninstall-WorkspaceWrangler.ps1                   # remove shortcuts, keep settings
@@ -21,7 +21,8 @@
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
 param(
     [switch]$RemoveSettings,
-    [string]$Folder = [Environment]::GetFolderPath('Desktop')
+    [string]$Folder = [Environment]::GetFolderPath('Desktop'),
+    [string]$StartMenuFolder = [Environment]::GetFolderPath('Programs')
 )
 
 $pattern = 'Start-Workspace(Wrangler|Orchestrator)\.ps1'
@@ -40,7 +41,7 @@ foreach ($p in $procs) {
 
 # 2. Desktop shortcuts that point at the script.
 $sh = New-Object -ComObject WScript.Shell
-foreach ($f in @(Get-ChildItem -LiteralPath $Folder -Filter '*.lnk' -ErrorAction SilentlyContinue)) {
+foreach ($f in @(Get-ChildItem -LiteralPath $Folder, $StartMenuFolder -Filter '*.lnk' -ErrorAction SilentlyContinue)) {
     try { $lnk = $sh.CreateShortcut($f.FullName) } catch { continue }
     if ($lnk.Arguments -match $pattern) {
         if ($PSCmdlet.ShouldProcess($f.FullName, 'Delete shortcut')) { Remove-Item -LiteralPath $f.FullName -Force; $removed++; Write-Output "Removed shortcut: $($f.FullName)" }

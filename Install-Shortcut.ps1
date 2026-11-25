@@ -2,17 +2,13 @@
 .SYNOPSIS
     Creates the Desktop "Workspace Wrangler" shortcut (idempotent: overwrites).
     Checks that Git and VS Code are installed first (stops with instructions if not).
-    Also creates a "Wrangler - Cascade windows" shortcut with the hotkey Ctrl+Alt+W (-Hotkey to change, -NoHotkey to skip)
-    that cascades all open workspace windows to the front.
     Optional -Project makes a per-project shortcut that skips the picker.
 #>
 param(
     [string]$Name = 'Workspace Wrangler',
     [string]$Project,
     [string]$Folder = [Environment]::GetFolderPath('Desktop'),
-    [switch]$SkipPrereqCheck,
-    [string]$Hotkey = 'Ctrl+Alt+W',
-    [switch]$NoHotkey
+    [switch]$SkipPrereqCheck
 )
 
 # Prerequisites: Git and Visual Studio Code are expected to be installed already. Stop and say so if not.
@@ -61,17 +57,9 @@ foreach ($f in @(Get-ChildItem -LiteralPath $Folder -Filter '*.lnk' -ErrorAction
 }
 Write-Output "Created $($lnk.FullName)"
 
-# A second shortcut whose keyboard shortcut cascades every open workspace window to the front (-Cascade).
-# Windows only honours shortcut hotkeys for shortcuts on the Desktop or in the Start Menu.
-if (-not $Project -and -not $NoHotkey -and $Hotkey) {
-    $hk = $sh.CreateShortcut((Join-Path $Folder 'Wrangler - Cascade windows.lnk'))
-    $hk.TargetPath = 'powershell.exe'
-    $hk.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$script`" -Cascade"
-    $hk.WorkingDirectory = $PSScriptRoot
-    $hk.WindowStyle = 7   # minimized, so no console flash
-    $hk.Hotkey = $Hotkey
-    $hk.Description = 'Workspace Wrangler: cascade all open workspace windows and bring them to the front'
-    if (Test-Path -LiteralPath $ico) { $hk.IconLocation = "$ico,0" } elseif ($wt) { $hk.IconLocation = "$wt,0" }
-    $hk.Save()
-    Write-Output "Created $($hk.FullName) (hotkey $Hotkey)"
+# v0.6.0 created a separate "Wrangler - Cascade windows" shortcut for the hotkey. The hotkey is now built into the
+# picker (config.json "hotkey"), so remove that shortcut from the Desktop / Start Menu if it is there.
+foreach ($dir in @($Folder, [Environment]::GetFolderPath('Programs'))) {
+    $legacyHk = Join-Path $dir 'Wrangler - Cascade windows.lnk'
+    if (Test-Path -LiteralPath $legacyHk) { Remove-Item -LiteralPath $legacyHk -Force; Write-Output "Removed old hotkey shortcut $legacyHk (the hotkey is now built into the picker)" }
 }
