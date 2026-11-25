@@ -45,9 +45,10 @@ A launcher that finds recently active project folders and opens them as workspac
 2. No credentials or secrets SHALL be stored or required.
 
 ### R6. Entry point
-1. The system SHALL provide an installer that creates a Desktop `.lnk` ("Workspace Picker") targeting `powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File <script>` with the Windows Terminal icon.
+1. The system SHALL provide an installer that creates a Desktop `.lnk` ("Workspace Wrangler") targeting `powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File <script>` with the Windows Terminal icon.
 2. WHEN `-Project <name>` is passed to the installer THEN the shortcut SHALL launch that project directly.
 3. Re-running the installer SHALL overwrite the shortcut (idempotent).
+4. The system SHALL provide `Uninstall-WorkspaceWrangler.ps1`, which stops a running picker and deletes Desktop shortcuts that launch the script (supporting `-WhatIf`), keeps settings unless `-RemoveSettings` is given, and never deletes the program folder, projects or terminals.
 
 ### R9. Window per project, compact titles
 1. WHEN several projects are launched THEN each SHALL open in its own new Windows Terminal window (one `wt -w new` call per project); `-Window <id>` SHALL instead put all tabs in that window.

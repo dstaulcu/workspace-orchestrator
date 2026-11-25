@@ -5,7 +5,7 @@
     Projects that are already open are brought to the front instead of being opened twice.
 
 .DESCRIPTION
-    Interactive (default): WinForms picker with filter, pinning (star), pre-checked last
+    Interactive (default): WinForms picker with filter, pre-checked last
     selection, branch/dirty columns. Use -Picker Grid for plain Out-GridView.
 
     Agent / scripted use (no UI):
@@ -14,8 +14,8 @@
       -All [-Top N]              launch the N most recent (default 15)
       add -DryRun to print the wt command line instead of launching
 
-    Settings live in ~\.config\workspace_picker\: config.json (defaults; switches/parameters override it),
-    presets.json (per-project overrides) and state.json (pins and last selection).
+    Settings live in ~\.config\workspace_wrangler\: config.json (defaults; switches/parameters override it),
+    presets.json (per-project overrides) and state.json (last selection).
 
 .PARAMETER Root       Folder whose immediate subfolders are projects.
 .PARAMETER Top        Limit list/picker to the N most recent (0 = all). With -All: how many to launch (default 15).
@@ -31,6 +31,7 @@
 .PARAMETER NoColor    Don't set tab colors.
 .PARAMETER Focus      Bring an already-open project's tab (and its window) to the foreground; exit 1 if none is open.
 .PARAMETER Window     Value for wt's -w (e.g. 0 = most recent existing window): put all tabs in that window. Default: a new window per project.
+.PARAMETER CheckUpdate Check GitHub for a newer release, print the result as JSON and exit (no UI).
 .PARAMETER DryRun     Print the wt arguments instead of launching.
 #>
 [CmdletBinding()]
@@ -49,19 +50,28 @@ param(
     [switch]$NoColor,
     [string]$Window,
     [string]$Focus,
+    [switch]$CheckUpdate,
     [switch]$DryRun
 )
 
 # ---------------------------------------------------------------- config / state
+$AppVersion = '0.5.0'   # bump on every release; the update check compares it with the latest GitHub release tag
 $cfg = @{
     root = 'C:\code'; top = 0; ignore = @()
     noiseDirs = @('.git','node_modules','.venv','venv','__pycache__','dist','build','.next','bin','obj','.idea','.vscode')
     maxScanFiles = 5000; maxScanDepth = 6; picker = 'Forms'
     shell = $true; diff = $true; tabColors = $true; gitInfo = $true; claudeArgs = ''; keepOpen = $true; refreshSeconds = 60; arrangeOnLaunch = $true; arrangeStyle = 'cascade'; keepDesktopIconsClear = $true; windowWidth = 1100; windowHeight = 750; restoreLayouts = $true
+    checkForUpdates = $true; updateCheckHours = 24; updateRepo = 'dstaulcu/workspace-wrangler'
     gitOpsOrg = ''; gitOpsVisibility = 'private'
 }
 # Settings live outside the repo so they survive updates; files from older versions are moved over once.
-$ConfigDir = Join-Path $env:USERPROFILE '.config\workspace_picker'
+$ConfigDir = Join-Path $env:USERPROFILE '.config\workspace_wrangler'
+# The app used to be called Workspace Picker / Orchestrator: carry its settings folder over (read it in place during -DryRun).
+$legacyDir = Join-Path $env:USERPROFILE '.config\workspace_picker'
+if ((Test-Path -LiteralPath $legacyDir) -and -not (Test-Path -LiteralPath $ConfigDir)) {
+    if ($DryRun) { $ConfigDir = $legacyDir }
+    else { try { Move-Item -LiteralPath $legacyDir -Destination $ConfigDir } catch { Write-Warning "Could not migrate $legacyDir : $_"; $ConfigDir = $legacyDir } }
+}
 foreach ($f in 'presets.json','state.json') {
     $old = Join-Path $PSScriptRoot $f; $new = Join-Path $ConfigDir $f
     if ((Test-Path -LiteralPath $old) -and -not (Test-Path -LiteralPath $new) -and -not $DryRun) {
@@ -84,15 +94,18 @@ $wantColor = (-not $NoColor) -and [bool]$cfg.tabColors
 $Project = @($Project | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 
 $stateFile = Join-Path $ConfigDir 'state.json'
-$state = @{ pinned = @(); last = @() }
+$state = @{ last = @() }
 if (Test-Path -LiteralPath $stateFile) {
     try {
         $s = Get-Content -LiteralPath $stateFile -Raw | ConvertFrom-Json
-        $state.pinned = @($s.pinned | Where-Object { $_ }); $state.last = @($s.last | Where-Object { $_ })
+        $state.last = @($s.last | Where-Object { $_ })
+        if ($s.lastUpdateCheck) { $state.lastUpdateCheck = [string]$s.lastUpdateCheck }
+        if ($s.skipVersion) { $state.skipVersion = [string]$s.skipVersion }
+        if ($s.update) { $state.update = $s.update }
     } catch { Write-Warning "Could not parse state.json: $_" }
 }
 function Save-State {
-    try { New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null; ([pscustomobject]@{ pinned = @($state.pinned); last = @($state.last) } | ConvertTo-Json) | Set-Content -LiteralPath $stateFile -Encoding UTF8 }
+    try { New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null; ([pscustomobject]@{ last = @($state.last); lastUpdateCheck = $state.lastUpdateCheck; skipVersion = $state.skipVersion; update = $state.update } | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $stateFile -Encoding UTF8 }
     catch { Write-Warning "Could not save state.json: $_" }
 }
 
@@ -175,13 +188,6 @@ function Get-GitInfo([string]$Dir) {
         }
     } catch { }
     [pscustomobject]@{ Branch = $branch; Dirty = $dirty; RemoteUrl = $url }
-}
-
-# Pinned projects first, then newest-first (input is already newest-first).
-function Sort-Projects($Rows) {
-    $pin = @($Rows | Where-Object { $state.pinned -contains $_.Path })
-    $rest = @($Rows | Where-Object { $state.pinned -notcontains $_.Path })
-    @($pin) + @($rest)
 }
 
 # Stable per-project tab color: hash of the name -> hue.
@@ -579,6 +585,130 @@ function Invoke-PickerGitOp([string]$Op, $Row, $OwnerForm) {
     $res.Message
 }
 
+# ---------------------------------------------------------------- updates (GitHub releases)
+# Network use is limited to this check: one GET of the public releases list, sent with a generic User-Agent.
+function ConvertTo-ReleaseVersion([string]$Tag) {
+    if ($Tag -match '^v?(\d+)\.(\d+)\.(\d+)') { return [version]"$($Matches[1]).$($Matches[2]).$($Matches[3])" }
+    return $null
+}
+
+# Starts the check without blocking (returns a Task), or $null when disabled or checked recently (unless $Force).
+function Start-UpdateCheck([bool]$Force) {
+    if (-not $Force) {
+        if (-not [bool]$cfg.checkForUpdates) { return $null }
+        if ($state.lastUpdateCheck) {
+            try { if (((Get-Date) - [datetime]$state.lastUpdateCheck).TotalHours -lt [double]$cfg.updateCheckHours) { return $null } } catch { }
+        }
+    }
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+        Add-Type -AssemblyName System.Net.Http
+        $http = New-Object System.Net.Http.HttpClient
+        $http.Timeout = [TimeSpan]::FromSeconds(10)
+        $http.DefaultRequestHeaders.UserAgent.ParseAdd('WorkspaceWrangler-update-check')
+        $http.DefaultRequestHeaders.Accept.ParseAdd('application/vnd.github+json')
+        return $http.GetStringAsync("https://api.github.com/repos/$($cfg.updateRepo)/releases?per_page=10")
+    } catch { return $null }
+}
+
+# Turns a finished check into an info object (or $null: up to date / version skipped; or @{Failed=$true}), and remembers the result.
+function Complete-UpdateCheck($Task, [bool]$Force) {
+    try {
+        $best = $null
+        $releases = $Task.Result | ConvertFrom-Json   # PS 5.1 emits a JSON array as ONE object; foreach below enumerates it
+        foreach ($r in $releases) {
+            if ($r.draft) { continue }
+            $v = ConvertTo-ReleaseVersion ([string]$r.tag_name)
+            if ($v -and (-not $best -or $v -gt $best.v)) { $best = @{ v = $v; r = $r } }
+        }
+        $state.lastUpdateCheck = (Get-Date).ToString('o')
+        if ($best) { $state.update = [pscustomobject]@{ tag = [string]$best.r.tag_name; url = [string]$best.r.html_url; zip = [string]$best.r.zipball_url } }
+        else { $state.update = $null }
+        if (-not $DryRun) { Save-State }
+    } catch {
+        try { $state.lastUpdateCheck = (Get-Date).ToString('o'); if (-not $DryRun) { Save-State } } catch { }   # back off until the next interval
+        return [pscustomobject]@{ Failed = $true }
+    }
+    return (Get-UpdateInfo $Force)
+}
+
+# The remembered latest release, if newer than this one (and not skipped unless $IgnoreSkip).
+function Get-UpdateInfo([bool]$IgnoreSkip = $false) {
+    $u = $state.update
+    if (-not $u) { return $null }
+    $v = ConvertTo-ReleaseVersion ([string]$u.tag)
+    if (-not $v -or $v -le [version]$AppVersion) { return $null }
+    if (-not $IgnoreSkip -and $state.skipVersion -eq [string]$u.tag) { return $null }
+    [pscustomobject]@{ Tag = [string]$u.tag; Version = $v.ToString(); Url = [string]$u.url; Zip = [string]$u.zip }
+}
+
+# Applies the update in place: git fast-forward for a clone, otherwise download + copy over the install folder.
+# Settings live in ~\.config\workspace_wrangler, so they are untouched. Returns @{ Ok; Message }.
+function Install-Update($Info, [string]$Dir = $PSScriptRoot, [string]$Cfg = $ConfigDir, [string]$Ver = $AppVersion) {
+    try {
+        if (Test-Path -LiteralPath (Join-Path $Dir '.git')) {
+            # Never prompt: this runs without a visible console, so a credential prompt would hang forever.
+            $env:GIT_TERMINAL_PROMPT = '0'; $env:GCM_INTERACTIVE = 'never'
+            if (@(& git -C $Dir status --porcelain 2>$null).Count) { return [pscustomobject]@{ Ok = $false; Message = 'This folder is a git clone with uncommitted changes. Commit or stash them, then update again (or run: git fetch --tags; git merge --ff-only ' + $Info.Tag + ').' } }
+            $out = (& git -C $Dir -c credential.interactive=never fetch --tags origin 2>&1 | Out-String)
+            if ($LASTEXITCODE -ne 0) { return [pscustomobject]@{ Ok = $false; Message = "git fetch failed: $out" } }
+            $out = (& git -C $Dir merge --ff-only $Info.Tag 2>&1 | Out-String)
+            if ($LASTEXITCODE -ne 0) { return [pscustomobject]@{ Ok = $false; Message = "Could not fast-forward to $($Info.Tag): $out" } }
+            return [pscustomobject]@{ Ok = $true; Message = "Updated to $($Info.Tag) with git." }
+        }
+        if ([string]$Info.Zip -notmatch '^https://(api\.github\.com|codeload\.github\.com|github\.com)/') {
+            return [pscustomobject]@{ Ok = $false; Message = 'The release download address is not a GitHub https URL; nothing was changed.' }
+        }
+        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+        $tmp = Join-Path $env:TEMP ("wrangler-update-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+        try {
+            $zip = Join-Path $tmp 'release.zip'
+            Invoke-WebRequest -Uri $Info.Zip -OutFile $zip -UseBasicParsing -TimeoutSec 60 -Headers @{ 'User-Agent' = 'WorkspaceWrangler-update' }
+            Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $tmp 'x') -Force
+            $root = Get-ChildItem -LiteralPath (Join-Path $tmp 'x') -Directory | Select-Object -First 1
+            if (-not $root -or -not (Test-Path -LiteralPath (Join-Path $root.FullName 'Start-WorkspaceWrangler.ps1'))) {
+                return [pscustomobject]@{ Ok = $false; Message = 'The downloaded release does not look like Workspace Wrangler; nothing was changed.' }
+            }
+            # Back up whatever is about to be replaced, then copy the new files over the install folder.
+            $bk = Join-Path $Cfg "backup\v$Ver"
+            $rels = @()
+            foreach ($f in Get-ChildItem -LiteralPath $root.FullName -Recurse -File) {
+                $rel = $f.FullName.Substring($root.FullName.Length).TrimStart('\'); $rels += $rel
+                $cur = Join-Path $Dir $rel
+                if (Test-Path -LiteralPath $cur) {
+                    $dst = Join-Path $bk $rel; New-Item -ItemType Directory -Force -Path (Split-Path $dst) | Out-Null
+                    Copy-Item -LiteralPath $cur -Destination $dst -Force
+                }
+            }
+            try {
+                Copy-Item -Path (Join-Path $root.FullName '*') -Destination $Dir -Recurse -Force -ErrorAction Stop
+            } catch {
+                $err = $_
+                foreach ($rel in $rels) {   # roll back what we backed up
+                    $b = Join-Path $bk $rel
+                    if (Test-Path -LiteralPath $b) { try { Copy-Item -LiteralPath $b -Destination (Join-Path $Dir $rel) -Force } catch { } }
+                }
+                return [pscustomobject]@{ Ok = $false; Message = "Update failed while copying files ($err). The previous files were restored." }
+            }
+        } finally { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
+        return [pscustomobject]@{ Ok = $true; Message = "Updated to $($Info.Tag). The previous files are backed up in $bk." }
+    } catch { return [pscustomobject]@{ Ok = $false; Message = "Update failed: $_" } }
+}
+
+# Runs Install-Update on a background runspace so the picker stays responsive; poll .Handle.IsCompleted, then EndInvoke.
+function Start-InstallUpdate($Info) {
+    $ps = [powershell]::Create()
+    [void]$ps.AddScript("function Install-Update {`n" + ${function:Install-Update}.ToString() + "`n}`nInstall-Update `$args[0] `$args[1] `$args[2] `$args[3]")
+    [void]$ps.AddArgument($Info).AddArgument($PSScriptRoot).AddArgument($ConfigDir).AddArgument($AppVersion)
+    @{ PS = $ps; Handle = $ps.BeginInvoke() }
+}
+
+# Start a fresh picker (same way the desktop shortcut does) so the new code takes over.
+function Restart-Wrangler {
+    Start-Process -FilePath 'powershell.exe' -ArgumentList "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$PSCommandPath`""
+}
+
 # ---------------------------------------------------------------- wt command building
 # --- wt quoting rules (fragile!) ---
 # * The whole wt command line is ONE string, passed verbatim by Start-Process;
@@ -601,13 +731,12 @@ function New-TabClause([string]$Title, [string]$Dir, [string]$Command, [string]$
 # list of open projects comes from $GetRunning (all scriptblocks defined in the main script,
 # because WinForms handlers are closures that can't see script-scope state or functions).
 function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [bool]$InitialFresh,
-                          [bool]$KeepOpen, [scriptblock]$OnLaunch, [scriptblock]$OnSwitch, [scriptblock]$GetRunning, [int]$RefreshSeconds = 0, [scriptblock]$OnSaveLayout, [scriptblock]$OnArrange, [scriptblock]$OnGitOp) {
+                          [bool]$KeepOpen, [scriptblock]$OnLaunch, [scriptblock]$OnSwitch, [scriptblock]$GetRunning, [int]$RefreshSeconds = 0, [scriptblock]$OnSaveLayout, [scriptblock]$OnArrange, [scriptblock]$OnGitOp, [hashtable]$Update) {
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
     [System.Windows.Forms.Application]::EnableVisualStyles()
     $ctx = @{
         Rebuilding = $false
-        Pinned  = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
         Checked = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
         Running = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
         Clock   = [System.Diagnostics.Stopwatch]::StartNew()
@@ -620,11 +749,11 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
         PresetExample = Join-Path $PSScriptRoot 'presets.example.json'
     }
     foreach ($r in $Rows) { if ($r.RemoteUrl) { $ctx.Remote[$r.Path] = $r.RemoteUrl } }
-    foreach ($p in $state.pinned) { [void]$ctx.Pinned.Add($p) }
     foreach ($p in $Preselect)    { [void]$ctx.Checked.Add($p) }
 
     $form = New-Object System.Windows.Forms.Form
-    $form.Text = 'Workspace Picker'; $form.ClientSize = New-Object System.Drawing.Size(1260, 628)
+    $iconFile = Join-Path $PSScriptRoot 'assets\wrangler.ico'
+    $form.Text = "Workspace Wrangler v$($Update.Current)"; if (Test-Path -LiteralPath $iconFile) { try { $form.Icon = New-Object System.Drawing.Icon($iconFile) } catch { } }; $form.ClientSize = New-Object System.Drawing.Size(1150, 628)
     $form.StartPosition = 'CenterScreen'; $form.KeyPreview = $true
 
     $lbl = New-Object System.Windows.Forms.Label
@@ -637,7 +766,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
 
     $lv = New-Object System.Windows.Forms.ListView
     $lv.View = 'Details'; $lv.CheckBoxes = $true; $lv.FullRowSelect = $true; $lv.GridLines = $true; $lv.HideSelection = $false
-    $lv.Location = New-Object System.Drawing.Point(12, 44); $lv.Size = New-Object System.Drawing.Size(1236, 500)
+    $lv.Location = New-Object System.Drawing.Point(12, 44); $lv.Size = New-Object System.Drawing.Size(1126, 500)
     $lv.Anchor = 'Top,Bottom,Left,Right'
     # Path comes before the git-only columns (Branch, State, Remote) because not every project is a repo.
     # The Remote link column index is stored in $ctx.RemoteCol (set with $colHelp below); keep it, $colHelp and the
@@ -648,7 +777,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
 
     # ListView column headers have no built-in tooltips, so hit-test the mouse against the header strip.
     $colHelp = @(
-        "Project: folder name under the root.`n$([char]0x2605) = pinned (kept at the top). Green row = already open in a terminal.",
+        "Project: folder name under the root.`nGreen row = already open in a terminal.",
         "Open: $([char]0x25CF) means a cc:<project> or sh:<project> tab is open in some Windows Terminal window.`nHighlight the row and click Switch to bring it forward.",
         "Last active: how long ago the project's latest git commit was`n(or its newest file change if it isn't a git repo).",
         "When: exact date and time of that last activity.",
@@ -697,16 +826,84 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
     $status.Text = ''; $status.AutoSize = $true; $status.Location = New-Object System.Drawing.Point(12, 552); $status.Anchor = 'Bottom,Left'
 
     # Help area: links back to the GitHub repo and its issue pages.
-    $repoUrl = 'https://github.com/dstaulcu/workspace-orchestrator'
+    $repoUrl = 'https://github.com/dstaulcu/workspace-wrangler'
     $help = New-Object System.Windows.Forms.LinkLabel
     $help.Text = 'Help:  Repository  |  Open issues  |  Report a bug or request a feature'
-    $help.AutoSize = $true; $help.Location = New-Object System.Drawing.Point(780, 552); $help.Anchor = 'Bottom,Right'
+    $help.AutoSize = $true; $help.Location = New-Object System.Drawing.Point(670, 552); $help.Anchor = 'Bottom,Right'
     foreach ($l in @(@('Repository', $repoUrl), @('Open issues', "$repoUrl/issues"), @('Report a bug or request a feature', "$repoUrl/issues/new/choose"))) {
         [void]$help.Links.Add($help.Text.IndexOf($l[0]), $l[0].Length, $l[1])
     }
     $help.Add_LinkClicked({
         param($s, $e)
         try { Start-Process ([string]$e.Link.LinkData) } catch { $status.Text = "Could not open $($e.Link.LinkData)" }
+    }.GetNewClosure())
+
+    # Update notice: replaces the hint line when a newer release exists. Hooks are scriptblocks from the main script.
+    $updLink = New-Object System.Windows.Forms.LinkLabel
+    $updLink.AutoSize = $true; $updLink.Location = New-Object System.Drawing.Point(400, 16); $updLink.Visible = $false
+    $ctx.UpdInfo = $null; $ctx.UpdTask = $null; $ctx.UpdForced = $false
+    $showUpdate = {
+        param($info)
+        $ctx.UpdInfo = $info
+        if ($info) {
+            $updLink.Links.Clear()
+            $updLink.Text = "Update available: v$($info.Version)  |  What's new  |  Update now  |  Skip this version"
+            foreach ($l in @(@("What's new", 'notes'), @('Update now', 'update'), @('Skip this version', 'skip'))) { [void]$updLink.Links.Add($updLink.Text.IndexOf($l[0]), $l[0].Length, $l[1]) }
+            $updLink.Visible = $true; $hint.Visible = $false
+        } else { $updLink.Visible = $false; $hint.Visible = $true }
+    }.GetNewClosure()
+    $updTimer = New-Object System.Windows.Forms.Timer
+    $updTimer.Interval = 700
+    $updTimer.Add_Tick({
+        if ($ctx.UpdTask -and $ctx.UpdTask.IsCompleted) {
+            $updTimer.Stop()
+            $info = & $Update.Done $ctx.UpdTask $ctx.UpdForced
+            $ctx.UpdTask = $null
+            $failed = [bool]($info -and $info.PSObject.Properties['Failed'])
+            if ($failed) { $info = & $Update.Cached }
+            & $showUpdate $info
+            if ($ctx.UpdForced) {
+                if ($failed) { $status.Text = 'Could not check for updates (offline or rate-limited). Try again later.' }
+                elseif ($info) { $status.Text = "Update available: v$($info.Version)." } else { $status.Text = "You're up to date (v$($Update.Current))." }
+            }
+            $ctx.UpdForced = $false
+        }
+    }.GetNewClosure())
+    $ctx.InstTask = $null
+    $instTimer = New-Object System.Windows.Forms.Timer
+    $instTimer.Interval = 500
+    $instTimer.Add_Tick({
+        if ($ctx.InstTask -and $ctx.InstTask.Handle.IsCompleted) {
+            $instTimer.Stop()
+            $t = $ctx.InstTask; $ctx.InstTask = $null
+            try { $res = @($t.PS.EndInvoke($t.Handle) | Where-Object { $_ -and $_.PSObject.Properties['Ok'] } | Select-Object -Last 1)[0] } catch { $res = $null }
+            try { $t.PS.Dispose() } catch { }
+            $form.Cursor = [System.Windows.Forms.Cursors]::Default
+            if ($res -and $res.Ok) {
+                [void][System.Windows.Forms.MessageBox]::Show($form, "$($res.Message)`n`nThe picker will now restart.", 'Update', 'OK', 'Information')
+                & $Update.Restart; $form.Close()
+            } else {
+                $status.Text = 'Update failed.'
+                $m = if ($res) { [string]$res.Message } else { 'The update did not finish.' }
+                [void][System.Windows.Forms.MessageBox]::Show($form, $m, 'Update failed', 'OK', 'Warning')
+            }
+        }
+    }.GetNewClosure())
+    $updLink.Add_LinkClicked({
+        param($s, $e)
+        $info = $ctx.UpdInfo; if (-not $info) { return }
+        switch ([string]$e.Link.LinkData) {
+            'notes'  { try { Start-Process $info.Url } catch { $status.Text = "Could not open $($info.Url)" } }
+            'skip'   { & $Update.Skip $info.Tag; & $showUpdate $null; $status.Text = "Skipping v$($info.Version). 'Check for updates now' in Settings brings it back." }
+            'update' {
+                $q = "Update Workspace Wrangler to v$($info.Version)?`n`nYour settings are kept. The picker will restart. Open terminal windows are not affected."
+                if ([System.Windows.Forms.MessageBox]::Show($form, $q, 'Update', 'YesNo', 'Question') -ne 'Yes') { return }
+                if ($ctx.InstTask) { return }
+                $form.Cursor = [System.Windows.Forms.Cursors]::AppStarting; $status.Text = 'Updating...'
+                $ctx.InstTask = & $Update.Install $info
+                $instTimer.Start()
+            }
+        }
     }.GetNewClosure())
 
     $chkFresh = New-Object System.Windows.Forms.CheckBox
@@ -726,13 +923,12 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
     $btnGit     = New-Btn 'Git' 480
     $btnArrange = New-Btn 'Arrange' 590
     $btnRefresh = New-Btn 'Refresh' 700
-    $btnPin     = New-Btn 'Pin / Unpin' 810
-    $btnSwitch  = New-Btn 'Switch' 920
-    $btnGo      = New-Btn 'Launch' 1030
-    $btnClose   = New-Btn 'Close' 1140
+    $btnSwitch  = New-Btn 'Switch' 810
+    $btnGo      = New-Btn 'Launch' 920
+    $btnClose   = New-Btn 'Close' 1030
     $btnClose.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
     $form.AcceptButton = $btnGo; $form.CancelButton = $btnClose
-    $form.Controls.AddRange(@($lbl, $filterBox, $hint, $lv, $status, $help, $chkFresh, $chkKeep, $btnSettings, $btnGit, $btnArrange, $btnRefresh, $btnPin, $btnSwitch, $btnGo, $btnClose))
+    $form.Controls.AddRange(@($lbl, $filterBox, $hint, $updLink, $lv, $status, $help, $chkFresh, $chkKeep, $btnSettings, $btnGit, $btnArrange, $btnRefresh, $btnSwitch, $btnGo, $btnClose))
 
     $ctrlTip = New-Object System.Windows.Forms.ToolTip
     $ctrlTip.InitialDelay = 400; $ctrlTip.AutoPopDelay = 12000
@@ -743,25 +939,21 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
     $ctrlTip.SetToolTip($btnGit, 'Git actions for the highlighted project: open its repository in your browser, initialize a local git repository, or create a new GitHub repository (in an organization you pick) and add it as origin. Also on the right-click menu of a row.')
     $ctrlTip.SetToolTip($btnArrange, 'Arrange the windows of all open projects now. Choose cascade, grid, side by side or stacked, or reset windows to the default size. Windows with a saved spot (Settings > Save window layout) go there; hold Shift while choosing to ignore saved spots.')
     $ctrlTip.SetToolTip($btnRefresh, 'Re-check which projects have tabs open in Windows Terminal (also happens when you return to this window).')
-    $ctrlTip.SetToolTip($btnPin, 'Pin or unpin the highlighted projects. Pinned projects (star) stay at the top of the list and are remembered.')
     $ctrlTip.SetToolTip($btnSwitch, 'Bring the highlighted project''s open tab and its terminal window to the foreground. Works for projects marked open.')
     $ctrlTip.SetToolTip($btnGo, 'Open the checked projects (or the highlighted one), each in its own new Windows Terminal window with a Claude Code tab and a shell tab. Projects already open are brought to the front instead; hold Shift while clicking to open a new copy anyway.')
     $ctrlTip.SetToolTip($btnClose, 'Close the picker without launching anything.')
 
     $green = [System.Drawing.Color]::FromArgb(222, 245, 226)
 
-    # Rebuild the list: pinned first, then recency; keeps checked + highlighted rows.
+    # Rebuild the list (newest activity first); keeps checked + highlighted rows.
     $fill = {
         $ctx.Rebuilding = $true
         $sel = @($lv.SelectedItems | ForEach-Object { [string]$_.Tag })
         $lv.BeginUpdate(); $lv.Items.Clear()
         $f = $filterBox.Text.Trim()
-        $ordered = @($Rows | Where-Object { $ctx.Pinned.Contains($_.Path) }) + @($Rows | Where-Object { -not $ctx.Pinned.Contains($_.Path) })
-        foreach ($r in $ordered) {
+        foreach ($r in $Rows) {
             if ($f -and $r.Name.IndexOf($f, [StringComparison]::OrdinalIgnoreCase) -lt 0 -and $r.Path.IndexOf($f, [StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
-            $star = ''
-            if ($ctx.Pinned.Contains($r.Path)) { $star = [string][char]0x2605 + ' ' }
-            $it = New-Object System.Windows.Forms.ListViewItem(($star + $r.Name))
+            $it = New-Object System.Windows.Forms.ListViewItem($r.Name)
             $open = ''
             $isOpen = $ctx.Running.Contains($r.Name)
             if ($isOpen) { $open = [string][char]0x25CF }
@@ -895,6 +1087,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
     $miCfg = $menu.Items.Add('Edit config.json (global defaults)')
     $miPre = $menu.Items.Add('Edit presets.json (per-project overrides)')
     $miLay = $menu.Items.Add('Save window layout (remember where open projects are)')
+    $miUpd = $menu.Items.Add('Check for updates now')
     $miCfg.Add_Click({
         try {
             New-Item -ItemType Directory -Force -Path $ctx.ConfigDir | Out-Null
@@ -908,6 +1101,10 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
             Start-Process -FilePath $ctx.PresetFile; $status.Text = 'Opened presets.json. Restart the picker to apply changes.'
         } catch { $status.Text = "Could not open presets.json: $_" }
     }.GetNewClosure())
+    $miUpd.Add_Click({
+        $t = & $Update.Start $true
+        if ($t) { $ctx.UpdTask = $t; $ctx.UpdForced = $true; $status.Text = 'Checking for updates...'; $updTimer.Start() } else { $status.Text = 'Could not start the update check.' }
+    }.GetNewClosure())
     $miLay.Add_Click({
         try {
             $n = & $OnSaveLayout
@@ -915,11 +1112,6 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
         } catch { $status.Text = "Could not save layout: $_" }
     }.GetNewClosure())
     $btnSettings.Add_Click({ $menu.Show($btnSettings, (New-Object System.Drawing.Point(0, $btnSettings.Height))) }.GetNewClosure())
-    $btnPin.Add_Click({
-        $paths = @($lv.SelectedItems | ForEach-Object { [string]$_.Tag })
-        foreach ($p in $paths) { if ($ctx.Pinned.Contains($p)) { [void]$ctx.Pinned.Remove($p) } else { [void]$ctx.Pinned.Add($p) } }
-        & $fill
-    }.GetNewClosure())
     $btnSwitch.Add_Click({
         if ($lv.SelectedItems.Count -eq 0) { $status.Text = 'Highlight a project first, then Switch.'; return }
         $path = [string]$lv.SelectedItems[0].Tag
@@ -936,7 +1128,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
         if ($ctx.Checked.Count -eq 0) { $status.Text = 'Check at least one project to launch.'; return }
         $paths = @($ctx.Checked)
         $force = [bool]([System.Windows.Forms.Control]::ModifierKeys -band [System.Windows.Forms.Keys]::Shift)   # Shift+Launch = open a new copy even if already open
-        & $OnLaunch $paths $chkFresh.Checked @($ctx.Pinned) $force
+        & $OnLaunch $paths $chkFresh.Checked $force
         if ($chkKeep.Checked) {
             $ctx.Checked.Clear()
             & $fill
@@ -953,10 +1145,13 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
     $form.Add_Shown({
         $form.TopMost = $true; $form.Activate(); $form.TopMost = $false
         $filterBox.Focus(); & $refresh
+        # Update check on startup (non-blocking; throttled by updateCheckHours, cached result shown meanwhile).
+        $t = & $Update.Start $false
+        if ($t) { $ctx.UpdTask = $t; $updTimer.Start() } else { & $showUpdate (& $Update.Cached) }
     }.GetNewClosure())
     [void]$form.ShowDialog()
-    $timer.Dispose(); $bgTimer.Dispose()
-    [pscustomobject]@{ Pinned = @($ctx.Pinned) }
+    $timer.Dispose(); $bgTimer.Dispose(); $updTimer.Dispose()
+    $null
 }
 
 # ---------------------------------------------------------------- launch (build + start wt)
@@ -1032,6 +1227,19 @@ function Invoke-Launch($Selected, [bool]$FreshRun, [bool]$Remember, [bool]$Force
     }
 }
 
+# ---------------------------------------------------------------- -CheckUpdate (agent-friendly, no UI)
+if ($CheckUpdate) {
+    $t = Start-UpdateCheck $true
+    $info = $null; $ok = $false
+    if ($t -and $t.Wait(12000)) { $ok = -not $t.IsFaulted; if ($ok) { $info = Complete-UpdateCheck $t $true; if ($info -and $info.PSObject.Properties['Failed']) { $ok = $false; $info = $null } } }
+    [pscustomobject]@{
+        current = $AppVersion; checked = $ok
+        latest = $(if ($ok -and $state.update) { [string]$state.update.tag } else { $null })
+        updateAvailable = [bool]$info; url = $(if ($info) { $info.Url } else { $null })
+    } | ConvertTo-Json
+    return
+}
+
 # ---------------------------------------------------------------- -Focus (agent-friendly, no UI)
 if ($Focus) {
     if (Switch-ToProject $Focus) { return }
@@ -1059,7 +1267,6 @@ function New-Row($d, [bool]$Scan, [bool]$Git) {
         RemoteUrl = $(if ($gi) { $gi.RemoteUrl } else { $null })
         Branch = $(if ($gi) { $gi.Branch } else { $null })
         Dirty  = $(if ($gi) { $gi.Dirty } else { $null })
-        Pinned = ($state.pinned -contains $d.FullName)
         HasHistory = (Test-ClaudeHistory $d.FullName)
         HasPreset = [bool](Get-Preset $d.Name)
     }
@@ -1080,7 +1287,6 @@ if ($Project.Count -gt 0 -and -not $List) {
 
 $needGit = [bool]$cfg.gitInfo -and ($List -or ($Picker -eq 'Forms' -and -not $All))
 $rows = @($dirs | ForEach-Object { New-Row $_ $true $needGit } | Sort-Object LastActiveDt -Descending)
-$rows = @(Sort-Projects $rows)
 if ($Filter) { $rows = @($rows | Where-Object { $_.Name -like "*$Filter*" -or $_.Path -like "*$Filter*" }) }
 if ($Project.Count -gt 0) { $rows = @($rows | Where-Object { $Project -contains $_.Name -or $Project -contains $_.Path }) }
 if ($Top -gt 0 -and -not $All) { $rows = @($rows | Select-Object -First $Top) }
@@ -1092,7 +1298,7 @@ if ($List) {
         [pscustomobject]@{
             name = $_.Name; path = $_.Path
             lastActive = $(if ($_.LastActiveDt) { $_.LastActiveDt.ToString('o') } else { $null })
-            pinned = $_.Pinned; isGit = $_.IsGit; branch = $_.Branch; dirty = $_.Dirty; remoteUrl = $_.RemoteUrl
+            isGit = $_.IsGit; branch = $_.Branch; dirty = $_.Dirty; remoteUrl = $_.RemoteUrl
             running = [bool]($running | Where-Object { $_ -ieq $n })
             hasClaudeHistory = $_.HasHistory; hasPreset = $_.HasPreset
         } })
@@ -1105,15 +1311,14 @@ if ($All) {
     Invoke-Launch @($rows | Select-Object -First $n) ([bool]$Fresh) $false
 } elseif ($Picker -eq 'Grid') {
     $picked = @($rows | Select-Object Name, Relative, LastActive, Branch, Path |
-        Out-GridView -Title 'Workspace Picker: select projects (Ctrl/Shift for multiple)' -PassThru)
+        Out-GridView -Title 'Workspace Wrangler: select projects (Ctrl/Shift for multiple)' -PassThru)
     $sel = @($rows | Where-Object { $picked.Path -contains $_.Path })
     if ($sel.Count -gt 0) { Invoke-Launch $sel ([bool]$Fresh) $true }
 } else {
     # Callbacks stay as scriptblocks defined HERE so they keep script scope when invoked from WinForms closures.
     $onLaunch = {
-        param($paths, $fresh, $pins, $force)
-        $state.pinned = @($pins)
-        $sel = @(Sort-Projects @($rows | Where-Object { $paths -contains $_.Path }))
+        param($paths, $fresh, $force)
+        $sel = @($rows | Where-Object { $paths -contains $_.Path })
         Invoke-Launch $sel ([bool]$fresh -or [bool]$Fresh) $true ([bool]$force)
         if (-not $DryRun) { Save-State }
     }
@@ -1122,7 +1327,15 @@ if ($All) {
     $onSaveLayout = { Save-WindowLayout }
     $onArrange = { param($style, $ignoreSaved) Invoke-ArrangeOpen ([string]$style) ([bool]$ignoreSaved) }
     $onGitOp = { param($op, $row, $owner) Invoke-PickerGitOp ([string]$op) $row $owner }
-    $res = Show-FormsPicker $rows $Filter @($state.last) ([bool]$Fresh) ([bool]$cfg.keepOpen) $onLaunch $onSwitch $getRunning ([int]$cfg.refreshSeconds) $onSaveLayout $onArrange $onGitOp
-    $state.pinned = @($res.Pinned)
+    $update = @{
+        Current = $AppVersion
+        Start   = { param($force) Start-UpdateCheck ([bool]$force) }
+        Done    = { param($task, $force) Complete-UpdateCheck $task ([bool]$force) }
+        Cached  = { Get-UpdateInfo }
+        Install = { param($info) Start-InstallUpdate $info }
+        Skip    = { param($tag) $state.skipVersion = [string]$tag; if (-not $DryRun) { Save-State } }
+        Restart = { Restart-Wrangler }
+    }
+    [void](Show-FormsPicker $rows $Filter @($state.last) ([bool]$Fresh) ([bool]$cfg.keepOpen) $onLaunch $onSwitch $getRunning ([int]$cfg.refreshSeconds) $onSaveLayout $onArrange $onGitOp $update)
     if (-not $DryRun) { Save-State }
 }

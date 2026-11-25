@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "Workspace Orchestrator config.json",
+  "title": "Workspace Wrangler config.json",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -25,6 +25,9 @@
     "restoreLayouts": { "type": "boolean", "default": true, "description": "Put a project's new window where it was when you last used Settings > Save window layout (per monitor setup)." },
     "gitOpsOrg":    { "type": "string", "default": "", "description": "Git > Create remote repository on GitHub: the organization pre-filled as owner. Blank = your own GitHub account (or the first account gh lists)." },
     "gitOpsVisibility": { "enum": ["private", "internal", "public"], "default": "private", "description": "Git > Create remote repository on GitHub: visibility pre-selected in the dialog. 'internal' needs an organization on GitHub Enterprise." },
+    "checkForUpdates": { "type": "boolean", "default": true, "description": "On startup, look for a newer release on GitHub and offer to update. This is the only network request the app makes." },
+    "updateCheckHours": { "type": "number", "minimum": 0, "default": 24, "description": "Minimum hours between automatic update checks. Settings > Check for updates now always checks." },
+    "updateRepo": { "type": "string", "default": "dstaulcu/workspace-wrangler", "description": "GitHub owner/repo whose releases are checked (change it if you run a fork)." },
     "keepOpen":     { "type": "boolean", "default": true, "description": "Keep the picker open after launching." },
     "claudeArgs":   { "type": "string", "default": "", "description": "Extra arguments for claude in every project (no double quotes). Presets can override per project." }
   }

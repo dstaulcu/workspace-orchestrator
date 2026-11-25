@@ -19,9 +19,8 @@ When run without selection arguments, the launcher shows a picker so the user ca
 1. WHEN the user types in the filter box THEN the list SHALL narrow to projects whose name or path contains the text (case-insensitive) while preserving checked state.
 2. WHEN `-Filter <text>` is given THEN the box SHALL be pre-filled.
 
-### R3. Pinning
-1. WHEN the user selects rows and clicks Pin/Unpin THEN each row's pinned state SHALL toggle and the list SHALL re-sort with pinned projects (marked ★) first.
-2. Pins SHALL persist across runs in `state.json`, including when the picker is cancelled.
+### R3. (Removed) Pinning
+Pin / Unpin was removed; the list is always ordered newest activity first. Old `pinned` entries in `state.json` are ignored, and `-List` no longer reports `pinned`.
 
 ### R4. Remember last selection
 1. WHEN a launch is made through the picker THEN the system SHALL save the launched projects to `state.json`.
@@ -52,7 +51,7 @@ When run without selection arguments, the launcher shows a picker so the user ca
 3. Projects without a remote (or with a local-path remote) SHALL have a blank cell. -List SHALL report `remoteUrl` (or null).
 
 ### R7. Non-destructive
-1. A `-DryRun` through the picker SHALL NOT save last-selection (pins are still saved only when not a dry run).
+1. A `-DryRun` through the picker SHALL NOT save last-selection (state is only saved when not a dry run).
 
 
 

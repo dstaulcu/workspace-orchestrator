@@ -1,15 +1,17 @@
-# Workspace Orchestrator
+<p align="center"><img src="assets/wrangler.png" alt="Workspace Wrangler: a cowboy hat" width="160"></p>
 
-> **Status: experimental (v0.3).** Windows only. Works on my machine; expect rough edges. Issues and ideas welcome.
+# Workspace Wrangler
+
+> **Status: experimental (v0.5).** Windows only. Works on my machine; expect rough edges. Issues and ideas welcome.
 
 **Tame your sea of projects and terminals, and restart your whole workday in one click.**
 
-If you work across a dozen repos, you know the drill: dozens of terminal windows, no idea which one is the API and which is the docs, and every morning the same ritual of opening a terminal, `cd`-ing into a project, running `claude --continue`, opening a second tab for `git status`... times every project. Workspace Orchestrator is a small picker that does that for you.
+If you work across a dozen repos, you know the drill: dozens of terminal windows, no idea which one is the API and which is the docs, and every morning the same ritual of opening a terminal, `cd`-ing into a project, running `claude --continue`, opening a second tab for `git status`... times every project. Workspace Wrangler rounds them all up: it is a small picker that does that for you.
 
 - **Start the day in one click.** Your projects are listed newest-activity first, and yesterday's selection is pre-checked. Press **Launch** and each project opens in its own [Windows Terminal](https://aka.ms/terminal) window: a [Claude Code](https://claude.com/claude-code) session that resumes the last conversation, plus a shell tab showing `git status` and a diff summary, already in the right folder and color-coded.
 - **Always know what's open.** Leave the picker running. It watches your terminals (refreshing every 60 seconds by default), marks every project that already has tabs open, and **Switch** jumps straight to the right tab in the right window, however buried it is. Launching a project that's already open just brings it to the front instead of duplicating it.
-- **See where everything stands.** Last activity, branch, dirty/clean state and a clickable link to each repo's remote (GitHub, GitLab, anything) in one list. Pin the projects you always want at the top.
-- **Make it yours.** Per-project extra tabs, apps and Claude arguments; settings live in `~\.config\workspace_picker\` and are one **Settings** click away. AI agents and scripts can drive it too (agent mode).
+- **See where everything stands.** Last activity, branch, dirty/clean state and a clickable link to each repo's remote (GitHub, GitLab, anything) in one list.
+- **Make it yours.** Per-project extra tabs, apps and Claude arguments; settings live in `~\.config\workspace_wrangler\` and are one **Settings** click away. AI agents and scripts can drive it too (agent mode).
 
 ```mermaid
 flowchart LR
@@ -98,9 +100,8 @@ flowchart LR
 
 | You want to... | Use |
 |---|---|
-| Start the day with your active repos open | Double-click the **Workspace Picker** desktop shortcut, then **Launch** |
+| Start the day with your active repos open | Double-click the **Workspace Wrangler** desktop shortcut, then **Launch** |
 | See what you touched last | Picker sorts by last git commit (or newest file) |
-| Keep favorites at the top | **Pin** in the picker |
 | Re-open yesterday's set | Last selection is pre-checked |
 | Find an already-open workspace among many terminal windows | Keep the picker open; **Switch** raises the right tab and window. It rechecks every 60 s (`refreshSeconds`) |
 | Avoid opening a project twice | Launch on an open project just raises it (Shift+Launch forces a new copy) |
@@ -125,13 +126,13 @@ flowchart LR
 ## Quick start
 
 ```powershell
-git clone https://github.com/dstaulcu/workspace-orchestrator.git
-cd workspace-orchestrator
+git clone https://github.com/dstaulcu/workspace-wrangler.git
+cd workspace-wrangler
 
 # 1. Try it
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Start-WorkspaceOrchestrator.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Start-WorkspaceWrangler.ps1
 
-# 2. Optionally create a Desktop shortcut called "Workspace Picker"
+# 2. Optionally create a Desktop shortcut called "Workspace Wrangler"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Install-Shortcut.ps1
 ```
 
@@ -139,7 +140,16 @@ By default it treats each immediate subfolder of `C:\code` as a project. Change 
 
 ## Using the picker
 
-Check the projects you want, press **Launch** (or Enter). Type in the filter box to narrow the list. Select a row and click **Pin / Unpin** to keep it at the top. **Fresh sessions** starts plain `claude` instead of `claude --continue`. If a checked project is already open in a terminal, Launch brings its window to the front instead of opening a second copy (hold **Shift** while clicking Launch to open a new one anyway). Close launches nothing.
+Check the projects you want, press **Launch** (or Enter). Type in the filter box to narrow the list. **Fresh sessions** starts plain `claude` instead of `claude --continue`. If a checked project is already open in a terminal, Launch brings its window to the front instead of opening a second copy (hold **Shift** while clicking Launch to open a new one anyway). Close launches nothing.
+
+### Updates
+
+On startup the picker quietly checks GitHub for a newer release (at most once every 24 hours, without slowing startup). If there is one, a notice replaces the hint line: **Update available: vX.Y.Z | What's new | Update now | Skip this version**.
+
+- **What's new** opens the release notes.
+- **Update now** asks first, then updates in place and restarts the picker. A git clone is fast-forwarded to the release tag (and refuses if you have uncommitted changes); a zip install downloads the release and copies it over the install folder, with the replaced files backed up in `~\.config\workspace_wrangler\backup\`. Your settings live outside the install folder, so they are untouched. Open terminal windows are not affected.
+- **Skip this version** hides that release until a newer one appears. **Settings > Check for updates now** checks on demand and brings a skipped version back.
+- Turn it off with `checkForUpdates: false`; change the interval with `updateCheckHours`. `-CheckUpdate` prints the result as JSON for scripts.
 
 ### Arrange your windows
 
@@ -186,10 +196,10 @@ Orchestration works for AI agents and scripts too. Projects that are already ope
 ```mermaid
 sequenceDiagram
     participant Agent as Agent / script
-    participant WO as Start-WorkspaceOrchestrator.ps1
+    participant WO as Start-WorkspaceWrangler.ps1
     participant WT as Windows Terminal
     Agent->>WO: -List
-    WO-->>Agent: JSON (name, path, lastActive, pinned, branch, dirty, hasClaudeHistory...)
+    WO-->>Agent: JSON (name, path, lastActive, branch, dirty, hasClaudeHistory...)
     Agent->>Agent: decide which projects matter
     Agent->>WO: -Project api-server,web-ui -DryRun
     WO-->>Agent: the exact wt command (nothing launched)
@@ -198,7 +208,7 @@ sequenceDiagram
 ```
 
 ```powershell
-$s = '.\Start-WorkspaceOrchestrator.ps1'
+$s = '.\Start-WorkspaceWrangler.ps1'
 powershell.exe -NoProfile -File $s -List -Top 5          # discover
 powershell.exe -NoProfile -File $s -Project a,b -DryRun  # preview
 powershell.exe -NoProfile -File $s -Project a,b          # launch
@@ -224,6 +234,7 @@ Exit code is `1` when none of the requested projects exist.
 | `-Fresh` | Plain `claude`, ignore session history |
 | `-NoShell` / `-NoDiff` / `-NoColor` | Drop the shell tab / the git summary / tab colors |
 | `-Focus <name>` | Bring an open project's tab and window to the foreground (no UI) |
+| `-CheckUpdate` | Check GitHub for a newer release and print JSON (`current`, `latest`, `updateAvailable`, `url`); no UI |
 | `-Window <id>` | Put all tabs in one existing Windows Terminal window (e.g. `0`) instead of a new window per project |
 | `-DryRun` | Print the `wt` arguments instead of launching |
 
@@ -235,13 +246,13 @@ Three small files, each with one job:
 flowchart LR
     CFG["config.json<br/>global defaults"] --> RUN(("Run"))
     PRE["presets.json<br/>per-project overrides"] --> RUN
-    STA["state.json<br/>pins + last selection<br/>(auto-written)"] --> RUN
+    STA["state.json<br/>last selection<br/>(auto-written)"] --> RUN
     CLI["Command-line switches"] --> RUN
 ```
 
 Precedence: command-line switch > per-project preset > `config.json`.
 
-All three files live in `~\.config\workspace_picker\` (outside the repo, so updates never touch them; files from older versions next to the script are moved there on first run). Open `config.json` or `presets.json` from the picker with the **Settings** button, which creates them from [`config.example.json`](config.example.json) / [`presets.example.json`](presets.example.json) if missing. Changes apply the next time the picker starts. Both files have JSON schemas ([`config.schema.json`](config.schema.json), [`presets.schema.json`](presets.schema.json)) (`config.example.json` already references its schema; for `presets.json` map `presets.schema.json` in your editor's JSON settings) so editors like VS Code give hover help and validation.
+All three files live in `~\.config\workspace_wrangler\` (outside the repo, so updates never touch them; files from older versions next to the script are moved there on first run). Open `config.json` or `presets.json` from the picker with the **Settings** button, which creates them from [`config.example.json`](config.example.json) / [`presets.example.json`](presets.example.json) if missing. Changes apply the next time the picker starts. Both files have JSON schemas ([`config.schema.json`](config.schema.json), [`presets.schema.json`](presets.schema.json)) (`config.example.json` already references its schema; for `presets.json` map `presets.schema.json` in your editor's JSON settings) so editors like VS Code give hover help and validation.
 
 ### `config.json` reference
 
@@ -259,6 +270,9 @@ All three files live in `~\.config\workspace_picker\` (outside the repo, so upda
 | `tabColors` | bool | `true` | Color tabs by project name | `-NoColor`, preset `tabColor` |
 | `gitInfo` | bool | `true` | Show branch / state / remote columns | none |
 | `keepOpen` | bool | `true` | Keep the picker open after launching | picker checkbox |
+| `checkForUpdates` | bool | `true` | Look for a newer GitHub release on startup and offer to update | none |
+| `updateCheckHours` | number | `24` | Minimum hours between automatic update checks | Settings > Check for updates now |
+| `updateRepo` | string | `dstaulcu/workspace-wrangler` | GitHub `owner/repo` whose releases are checked (for forks) | none |
 | `arrangeOnLaunch` | bool | `true` | After launching 2+ projects, arrange the new windows on the primary screen | none |
 | `keepDesktopIconsClear` | bool | `true` | Arranged windows start at desktop-icon row 2, column 2 (first column/row of desktop icons stay visible) | none |
 | `windowWidth` / `windowHeight` | int | `1100` / `750` | Default window size in pixels for Cascade and Reset window size (clamped to the screen) | none |
@@ -282,6 +296,16 @@ See [`presets.example.json`](presets.example.json). An array of objects matched 
 | `shell`, `diff` | bool | Override the global setting for this project |
 | `tabColor` | `#RRGGBB` | Fixed tab color |
 
+## Uninstall
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Uninstall-WorkspaceWrangler.ps1 -WhatIf          # preview
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Uninstall-WorkspaceWrangler.ps1                   # remove shortcuts, keep settings
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Uninstall-WorkspaceWrangler.ps1 -RemoveSettings   # also delete ~\.config\workspace_wrangler
+```
+
+It stops a running picker and deletes the Desktop shortcuts that launch Wrangler (including per-project ones). Settings are kept unless you pass `-RemoveSettings`, so a reinstall picks up where you left off. It never deletes the program folder; finish by deleting that yourself. Your projects, terminals and Claude sessions are not touched.
+
 ## How it avoids the classic Windows Terminal traps
 
 Building a multi-tab `wt` command line is fiddly. The script encodes these lessons so you don't have to relearn them:
@@ -293,7 +317,7 @@ Building a multi-tab `wt` command line is fiddly. The script encodes these lesso
 
 ## Safety
 
-Launching never modifies your projects. The only file it writes is its own `state.json` in `~\.config\workspace_picker\`. No network access, no credentials.
+Launching never modifies your projects. The only file it writes is its own `state.json` in `~\.config\workspace_wrangler\`. The only network request is the update check (one read of the public GitHub releases list with a generic user agent; disable it with `checkForUpdates: false`). No credentials.
 
 The **Git** menu is the one exception, and only when you ask: **Initialize local repository** asks before running `git init`, and **Create remote repository on GitHub** runs only when you press **Create** in its dialog. It uses your existing `gh` sign-in; the script never sees or stores a token.
 
@@ -305,6 +329,7 @@ The project is described Kiro-style (requirements → design → tasks) in [`.ki
 2. [Interactive picker](.kiro/specs/02-interactive-picker/)
 3. [Configuration, presets and agent mode](.kiro/specs/03-config-presets-agent-mode/)
 4. [Git actions](.kiro/specs/04-gitops-actions/)
+5. [Update management](.kiro/specs/05-updates/)
 
 ## Roadmap ideas
 

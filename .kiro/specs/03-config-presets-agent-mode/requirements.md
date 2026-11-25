@@ -22,7 +22,7 @@ Defaults and per-project behavior are data, not code. A UI-free mode lets script
 1. WHEN `claudeArgs` is set THEN it SHALL be appended to the `claude` command; semicolons SHALL be escaped for `wt`.
 
 ### R4. Agent mode (no UI)
-1. WHEN `-List` is given THEN the system SHALL print a JSON array (name, path, lastActive ISO-8601, pinned, isGit, branch, dirty, hasClaudeHistory, hasPreset) and launch nothing.
+1. WHEN `-List` is given THEN the system SHALL print a JSON array (name, path, lastActive ISO-8601, isGit, branch, dirty, hasClaudeHistory, hasPreset) and launch nothing.
 2. `-List` SHALL honor `-Filter`, `-Top`, and `-Project`.
 3. WHEN `-Project a,b` is given THEN the system SHALL launch exactly those projects (by folder name or full path), in the given order, without a picker and without scanning activity.
 4. WHEN a requested project is not found THEN the system SHALL warn and continue; IF none are found THEN it SHALL exit with code 1.
@@ -45,5 +45,5 @@ Defaults and per-project behavior are data, not code. A UI-free mode lets script
 3. Every `config.json` / `presets.json` key SHALL be documented in the README reference tables and described in the JSON schema files; adding a key SHALL update both.
 
 ### R8. Settings location
-1. `config.json`, `presets.json` and `state.json` SHALL live in `~\.config\workspace_picker\`, outside the repository.
+1. `config.json`, `presets.json` and `state.json` SHALL live in `~\.config\workspace_wrangler\`, outside the repository.
 2. WHEN `presets.json` or `state.json` exists next to the script and not in the settings folder THEN it SHALL be moved there once (never during `-DryRun`).

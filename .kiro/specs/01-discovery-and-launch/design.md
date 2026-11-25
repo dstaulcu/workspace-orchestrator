@@ -2,7 +2,7 @@
 
 ## Overview
 
-A single PowerShell 5.1 script (`Start-WorkspaceOrchestrator.ps1`) plus `Install-Shortcut.ps1`. No dependencies beyond Windows Terminal, and optionally git and the Claude Code CLI.
+A single PowerShell 5.1 script (`Start-WorkspaceWrangler.ps1`) plus `Install-Shortcut.ps1`. No dependencies beyond Windows Terminal, and optionally git and the Claude Code CLI.
 
 ```mermaid
 flowchart LR
