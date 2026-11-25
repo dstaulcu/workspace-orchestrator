@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Status
 
-Experimental (v0.3.x). Specs live in `.kiro/specs/` (requirements, design, tasks per feature); `README.md` explains the concepts. No test suite; verify with `-DryRun` and `-List`.
+Experimental (v0.5.x). Specs live in `.kiro/specs/` (requirements, design, tasks per feature); `README.md` explains the concepts. No test suite; verify with `-DryRun` and `-List`.
 
 Files: `Start-WorkspaceWrangler.ps1` (everything), `assets/wrangler.ico` + `tools/New-WranglerIcon.ps1` (the cowboy-hat icon and its generator), `Install-Shortcut.ps1` (Desktop .lnk; `-Project <name>` makes a per-project one), `Uninstall-WorkspaceWrangler.ps1` (removes shortcuts, stops the picker, `-RemoveSettings` deletes `~\.config\workspace_wrangler`; supports `-WhatIf`), `config.example.json` / `presets.example.json` (templates; the picker's Settings button copies them into place), `config.schema.json` / `presets.schema.json`. User settings live OUTSIDE the repo in `~\.config\workspace_wrangler\`: `config.json` (defaults; parameters override), `presets.json` (per-project `extraTabs`, `launch`, `claudeArgs`, `shell`, `diff`, `tabColor`), `state.json` (auto-written: last selection), `layouts.json` (saved window positions per monitor setup). Old copies next to the script are moved there once.
 
