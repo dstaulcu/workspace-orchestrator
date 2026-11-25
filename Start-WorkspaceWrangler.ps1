@@ -8,7 +8,7 @@
     Interactive (default): WinForms picker with filter, pre-checked last
     selection, branch/dirty columns. Use -Picker Grid for plain Out-GridView.
 
-    Agent / scripted use (no UI):
+    Command-line use (no UI):
       -List                      print all projects as JSON and exit (launches nothing)
       -Project a,b               launch exactly those projects (by folder name or full path)
       -All [-Top N]              launch the N most recent (default 15)
@@ -57,15 +57,15 @@ param(
 )
 
 # ---------------------------------------------------------------- config / state
-$AppVersion = '0.6.1'   # bump on every release; the update check compares it with the latest GitHub release tag
+$AppVersion = '1.0.0'   # bump on every release; the update check compares it with the latest GitHub release tag
 $cfg = @{
     root = 'C:\code'; top = 0; ignore = @()
     noiseDirs = @('.git','node_modules','.venv','venv','__pycache__','dist','build','.next','bin','obj','.idea','.vscode')
     maxScanFiles = 5000; maxScanDepth = 6; picker = 'Forms'
-    shell = $true; diff = $true; tabColors = $true; gitInfo = $true; claudeArgs = ''; keepOpen = $true; refreshSeconds = 60; arrangeOnLaunch = $true; arrangeStyle = 'cascade'; keepDesktopIconsClear = $true; windowWidth = 1100; windowHeight = 750; restoreLayouts = $true
+    shell = $true; diff = $true; tabColors = $true; gitInfo = $true; claudeArgs = ''; refreshSeconds = 60; arrangeOnLaunch = $true; arrangeStyle = 'cascade'; keepDesktopIconsClear = $true; windowWidth = 1100; windowHeight = 750; restoreLayouts = $true
     checkForUpdates = $true; updateCheckHours = 24; updateRepo = 'dstaulcu/workspace-wrangler'
     gitOpsOrg = ''; gitOpsTargets = @(); gitOpsVisibility = 'private'
-    ide = 'code'; ideArgs = '-n'; git = 'git'; hotkey = 'Ctrl+Alt+W'
+    ide = 'code'; ideArgs = '-n'; git = 'git'; hotkey = 'Ctrl+Alt+W'; claudeVariants = @()
 }
 # Settings live outside the repo so they survive updates; files from older versions are moved over once.
 $ConfigDir = Join-Path $env:USERPROFILE '.config\workspace_wrangler'
@@ -104,7 +104,7 @@ $wantColor = (-not $NoColor) -and [bool]$cfg.tabColors
 $Project = @($Project | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 
 $stateFile = Join-Path $ConfigDir 'state.json'
-$state = @{ last = @() }
+$state = @{ last = @(); pending = @{} }   # pending: project path -> message for Claude on its next launch
 if (Test-Path -LiteralPath $stateFile) {
     try {
         $s = Get-Content -LiteralPath $stateFile -Raw | ConvertFrom-Json
@@ -112,17 +112,19 @@ if (Test-Path -LiteralPath $stateFile) {
         if ($s.lastUpdateCheck) { $state.lastUpdateCheck = [string]$s.lastUpdateCheck }
         if ($s.skipVersion) { $state.skipVersion = [string]$s.skipVersion }
         if ($s.update) { $state.update = $s.update }
+        if ($s.pending) { foreach ($pp in $s.pending.PSObject.Properties) { $state.pending[$pp.Name] = [string]$pp.Value } }
     } catch { Write-Warning "Could not parse state.json: $_" }
 }
 function Save-State {
-    try { New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null; ([pscustomobject]@{ last = @($state.last); lastUpdateCheck = $state.lastUpdateCheck; skipVersion = $state.skipVersion; update = $state.update } | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $stateFile -Encoding UTF8 }
+    try { New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null; ([pscustomobject]@{ last = @($state.last); lastUpdateCheck = $state.lastUpdateCheck; skipVersion = $state.skipVersion; update = $state.update; pending = $state.pending } | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $stateFile -Encoding UTF8 }
     catch { Write-Warning "Could not save state.json: $_" }
 }
 
 $presets = @()
 $presetFile = Join-Path $ConfigDir 'presets.json'
 if (Test-Path -LiteralPath $presetFile) {
-    try { $presets = @(Get-Content -LiteralPath $presetFile -Raw | ConvertFrom-Json) }
+    # PS 5.1 emits a JSON array as ONE object, so enumerate it explicitly (otherwise every lookup returns the whole list).
+    try { foreach ($x in (Get-Content -LiteralPath $presetFile -Raw | ConvertFrom-Json)) { if ($x) { $presets += $x } } }
     catch { Write-Warning "Could not parse presets.json: $_" }
 }
 function Get-Preset([string]$Name) { $presets | Where-Object { $_.name -ieq $Name } | Select-Object -First 1 }
@@ -189,17 +191,56 @@ function Get-GitInfo([string]$Dir) {
     if (-not (Test-Path -LiteralPath (Join-Path $Dir '.git'))) { return $null }
     $branch = ''; $dirty = $null; $url = $null
     try {
-        $branch = [string](& git -C $Dir branch --show-current 2>$null)
-        $dirty = [bool](& git -C $Dir status --porcelain 2>$null | Select-Object -First 1)
-        # Prefer "origin"; otherwise the first remote with a browsable URL.
-        $remotes = @(& git -C $Dir remote 2>$null)
-        $ordered = @($remotes | Where-Object { $_ -eq 'origin' }) + @($remotes | Where-Object { $_ -ne 'origin' })
-        foreach ($rn in $ordered) {
-            $u = ConvertTo-RemoteWebUrl ([string](& git -C $Dir remote get-url $rn 2>$null))
+        # One call for branch + dirty state (porcelain v2: "# branch.head <name>" header, then one line per change).
+        $st = @(& git -C $Dir status --porcelain=v2 --branch 2>$null)
+        if ($LASTEXITCODE -eq 0) {
+            $bl = $st | Where-Object { $_ -like '# branch.head *' } | Select-Object -First 1
+            if ($bl) { $b = ([string]$bl).Substring(14).Trim(); if ($b -ne '(detached)') { $branch = $b } }
+            $dirty = [bool]($st | Where-Object { $_ -and -not ([string]$_).StartsWith('#') } | Select-Object -First 1)
+        }
+        # One call for every remote URL. Prefer "origin"; otherwise the first remote with a browsable URL.
+        $remotes = @()
+        foreach ($l in @(& git -C $Dir config --get-regexp '^remote\..+\.url$' 2>$null)) {
+            if ("$l" -match '^remote\.(.+)\.url\s+(.+)$') { $remotes += [pscustomobject]@{ Name = $Matches[1]; Url = $Matches[2].Trim() } }
+        }
+        $ordered = @($remotes | Where-Object { $_.Name -eq 'origin' }) + @($remotes | Where-Object { $_.Name -ne 'origin' })
+        foreach ($r in $ordered) {
+            $u = ConvertTo-RemoteWebUrl ([string]$r.Url)
             if ($u) { $url = $u; break }
         }
     } catch { }
     [pscustomobject]@{ Branch = $branch; Dirty = $dirty; RemoteUrl = $url }
+}
+
+# Last-active time and git info for many projects at once. Each project costs one or two git processes (or a
+# file walk), so they run on a small runspace pool instead of one after another. Returns @{ <path> = @{ La; Gi } }.
+function Get-ProjectFacts($Dirs, [bool]$Scan, [bool]$Git) {
+    $facts = @{}
+    if (-not $Scan -and -not $Git) { return $facts }
+    $fns = 'ConvertTo-RemoteWebUrl', 'Get-GitInfo', 'Get-LastActive'
+    $defs = ($fns | ForEach-Object { "function $_ {`n" + (Get-Item "function:$_").ScriptBlock.ToString() + "`n}" }) -join "`n"
+    $job = [scriptblock]::Create('param($dir, $scan, $git, $noise, $maxFiles, $maxDepth)' + "`n" + '$NoiseDirs = $noise; $MaxScanFiles = $maxFiles; $MaxScanDepth = $maxDepth' + "`n" + $defs + "`n" + @'
+$r = @{ La = $null; Gi = $null }
+if ($scan) { try { $r.La = Get-LastActive $dir } catch { } }
+if ($git)  { try { $r.Gi = Get-GitInfo $dir } catch { } }
+$r
+'@)
+    $size = [Math]::Max(2, [Math]::Min(8, [Environment]::ProcessorCount))
+    $pool = [runspacefactory]::CreateRunspacePool(1, $size)
+    $pool.Open()
+    $jobs = @()
+    try {
+        foreach ($d in $Dirs) {
+            $ps = [powershell]::Create(); $ps.RunspacePool = $pool
+            [void]$ps.AddScript($job.ToString()).AddArgument($d.FullName).AddArgument($Scan).AddArgument($Git).AddArgument($NoiseDirs).AddArgument($MaxScanFiles).AddArgument($MaxScanDepth)
+            $jobs += [pscustomobject]@{ Path = $d.FullName; PS = $ps; Handle = $ps.BeginInvoke() }
+        }
+        foreach ($j in $jobs) {
+            try { $out = @($j.PS.EndInvoke($j.Handle)); if ($out.Count) { $facts[$j.Path] = $out[-1] } } catch { }
+            $j.PS.Dispose()
+        }
+    } finally { $pool.Close(); $pool.Dispose() }
+    $facts
 }
 
 # Stable per-project tab color: hash of the name -> hue.
@@ -384,15 +425,31 @@ function Set-WindowArrangement($Windows, [string[]]$Names, $Saved, [string]$Styl
         if ($Saved.ContainsKey($n)) { $s = $Saved[$n]; Set-WindowRect $byName[$n].Handle $s.x $s.y $s.w $s.h ([bool]$s.max); $moved++ }
         else { $rest += $byName[$n] }
     }
-    if ($Style -eq 'none' -or $rest.Count -lt 2) { return $moved }
+    # The Wrangler's own window (KeepSize) is not part of the overlap; it is parked beside the cascade below.
+    $self = @($rest | Where-Object { $_.KeepSize }); $rest = @($rest | Where-Object { -not $_.KeepSize })
+    if ($Style -eq 'none' -or ($rest.Count + $self.Count) -lt 2) { return $moved }
     if ($Style -eq 'cascade') {
         # Overlapping windows, each offset down-right so every title bar stays visible; later windows sit on top.
         $step = 48
         $w = $dw; $h = $dh
         $slots = [Math]::Max(1, [Math]::Min([int][Math]::Floor(($wa.Width - $w) / $step), [int][Math]::Floor(($wa.Height - $h) / $step)) + 1)
+        $maxRight = $wa.X
         for ($i = 0; $i -lt $rest.Count; $i++) {
             $k = $i % $slots
             Set-WindowRect $rest[$i].Handle ($wa.X + $k * $step) ($wa.Y + $k * $step) $w $h $false $true
+            $maxRight = [Math]::Max($maxRight, $wa.X + $k * $step + $w)
+            $moved++
+        }
+        # Wrangler: top aligned with the first window, just right of the last one so it never hides behind them.
+        # If the screen has no room for that, it sits against the right edge of the work area instead.
+        foreach ($sw in $self) {
+            $rr = New-Object WoWin+RECT
+            if (-not [WoWin]::GetWindowRect([IntPtr][int64]$sw.Handle, [ref]$rr)) { continue }
+            $pw = $rr.Right - $rr.Left; $ph = $rr.Bottom - $rr.Top
+            $x = $maxRight + 8
+            if ($x + $pw -gt $wa.Right) { $x = [Math]::Max($wa.X, $wa.Right - $pw) }
+            $y = $wa.Y; if ($y + $ph -gt $wa.Bottom) { $y = [Math]::Max($wa.Y, $wa.Bottom - $ph) }
+            Set-WindowRect $sw.Handle $x $y $pw $ph $false $true
             $moved++
         }
         return $moved
@@ -420,16 +477,19 @@ function Invoke-ArrangeOpen([string]$Style = 'cascade', [bool]$IgnoreSaved = $fa
 
 # Hotkey action: discover the open workspace windows, restore minimized ones, cascade them (ignoring saved
 # positions, like Arrange > Cascade), and bring them to the front with the last one active. Returns the window count.
-function Invoke-CascadeFront {
+function Invoke-CascadeFront([int64]$SelfHandle = 0) {
     $wins = @(Get-TerminalWindows | Where-Object { $_.Name } | Sort-Object Name)
-    if (-not $wins.Count) { return 0 }
     Initialize-WinApi
+    if ($SelfHandle) {   # the Wrangler joins the cascade as the last (topmost) window, keeping its own size
+        $wins += [pscustomobject]@{ Handle = $SelfHandle; Name = '~Workspace Wrangler'; Sh = $null; KeepSize = $true }
+    }
+    if (-not $wins.Count) { return 0 }
     foreach ($w in $wins) { if ([WoWin]::IsIconic([IntPtr][int64]$w.Handle)) { [void][WoWin]::ShowWindow([IntPtr][int64]$w.Handle, 9) } }
     [void](Set-WindowArrangement $wins @($wins | ForEach-Object { $_.Name }) @{} 'cascade')
     # A tap of Alt lets SetForegroundWindow succeed when launched from a shortcut hotkey rather than from a focused window.
     [WoWin]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero); [WoWin]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)
     [void][WoWin]::SetForegroundWindow([IntPtr][int64]$wins[-1].Handle)
-    return $wins.Count
+    return @($wins | Where-Object { -not $_.KeepSize }).Count
 }
 
 # Global hotkey (only while the picker is open): "Ctrl+Alt+W" -> modifiers + virtual-key, or $null if it can't be parsed.
@@ -474,11 +534,12 @@ public class WoHotkey : IMessageFilter {
 "@
 }
 
-function Switch-ToProject([string]$Name) {
+function Switch-ToProject([string]$Name, [string]$Tab = 'any') {
     Initialize-WinApi
     $tabs = @(Get-TerminalTabs)
-    $hit = $tabs | Where-Object { $_.Title -ieq "cc:$Name" -or $_.Title -ieq "claude-code-$Name" } | Select-Object -First 1
-    if (-not $hit) { $hit = $tabs | Where-Object { $_.Title -ieq "sh:$Name" -or $_.Title -ieq "shell-$Name" } | Select-Object -First 1 }
+    $hit = $null
+    if ($Tab -ne 'shell') { $hit = $tabs | Where-Object { $_.Title -ieq "cc:$Name" -or $_.Title -ieq "claude-code-$Name" } | Select-Object -First 1 }
+    if (-not $hit -and $Tab -ne 'claude') { $hit = $tabs | Where-Object { $_.Title -ieq "sh:$Name" -or $_.Title -ieq "shell-$Name" } | Select-Object -First 1 }
     if (-not $hit) { return $false }
     try { $hit.Tab.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select() } catch { }
     $h = [IntPtr]$hit.Window.Current.NativeWindowHandle
@@ -683,6 +744,11 @@ function Show-NewRemoteDialog($OwnerForm, [string]$ProjectName, [bool]$IsGit, [b
     $dlg.Controls.AddRange(@((& $mk $OwnerLabel 12), $cboOwner, (& $mk 'Repository name:' 44), $txtName, (& $mk 'Visibility:' 76), $cboVis, $chkPush, $summary, $ok, $cancel))
     $tip = New-Object System.Windows.Forms.ToolTip
     $tip.SetToolTip($cboOwner, "Where to create the repository (pick one or type it); $OwnerHint. Organizations you list under gitOpsTargets in config.json appear here.")
+    $tip.SetToolTip($txtName, 'Name of the new repository (letters, digits, ".", "-" and "_"). Defaults to the folder name.')
+    $tip.SetToolTip($cboVis, 'Who can see the repository: private (only you / your org), internal (your enterprise) or public.')
+    $tip.SetToolTip($chkPush, 'Also push the current branch to the new repository right after creating it. Needs at least one commit.')
+    $tip.SetToolTip($ok, "Create the repository on $PL and add it to this project as 'origin'. Runs git init first if the folder is not a repository yet.")
+    $tip.SetToolTip($cancel, 'Close this dialog without creating anything.')
     if ($Provider -eq 'azure') { $cboVis.Enabled = $false; $tip.SetToolTip($cboVis, 'Azure DevOps repositories take their visibility from the project.') }
 
     $update = {
@@ -735,6 +801,11 @@ function Show-AddRemoteDialog($OwnerForm, [string]$ProjectName, [bool]$HasCommit
     $cancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
     $dlg.AcceptButton = $ok; $dlg.CancelButton = $cancel
     $dlg.Controls.AddRange(@($l, $txt, $chk, $note, $ok, $cancel))
+    $tip = New-Object System.Windows.Forms.ToolTip
+    $tip.SetToolTip($txt, 'The URL of a repository you already created, e.g. https://host/owner/repo.git or git@host:owner/repo.git.')
+    $tip.SetToolTip($chk, 'Also push the current branch to that remote right after adding it. Needs at least one commit.')
+    $tip.SetToolTip($ok, "Add this URL to the project as 'origin'. Nothing is created on the host.")
+    $tip.SetToolTip($cancel, 'Close this dialog without changing anything.')
     $ok.Add_Click({
         if ($txt.Text.Trim() -notmatch '^(https?://|ssh://|git://|[^@\s]+@[^:\s]+:)\S+$') {
             [void][System.Windows.Forms.MessageBox]::Show($dlg, 'Enter a git remote URL such as https://host/owner/repo.git or git@host:owner/repo.git.', 'Add existing remote', 'OK', 'Warning'); return
@@ -975,8 +1046,8 @@ function New-TabClause([string]$Title, [string]$Dir, [string]$Command, [string]$
 # Persistent picker: launches go through $OnLaunch, tab switching through $OnSwitch, and the
 # list of open projects comes from $GetRunning (all scriptblocks defined in the main script,
 # because WinForms handlers are closures that can't see script-scope state or functions).
-function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [bool]$InitialFresh,
-                          [bool]$KeepOpen, [scriptblock]$OnLaunch, [scriptblock]$OnSwitch, [scriptblock]$GetRunning, [int]$RefreshSeconds = 0, [scriptblock]$OnSaveLayout, [scriptblock]$OnArrange, [scriptblock]$OnGitOp, [hashtable]$Update, [scriptblock]$OnIde, [scriptblock]$OnCascade) {
+function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
+                          [scriptblock]$OnLaunch, [scriptblock]$OnSwitch, [scriptblock]$GetRunning, [int]$RefreshSeconds = 0, [scriptblock]$OnSaveLayout, [scriptblock]$OnArrange, [scriptblock]$OnGitOp, [hashtable]$Update, [scriptblock]$OnIde, [scriptblock]$OnCascade, [hashtable]$Actions) {
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
     [System.Windows.Forms.Application]::EnableVisualStyles()
@@ -1003,11 +1074,13 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
 
     $lbl = New-Object System.Windows.Forms.Label
     $lbl.Text = 'Filter:'; $lbl.Location = New-Object System.Drawing.Point(12, 16); $lbl.AutoSize = $true
+    $btnNew = New-Object System.Windows.Forms.Button
+    $btnNew.Text = '+ New project'; $btnNew.Location = New-Object System.Drawing.Point(308, 10); $btnNew.Size = New-Object System.Drawing.Size(90, 26)
     $filterBox = New-Object System.Windows.Forms.TextBox
-    $filterBox.Location = New-Object System.Drawing.Point(60, 12); $filterBox.Width = 320; $filterBox.Text = $InitialFilter
+    $filterBox.Location = New-Object System.Drawing.Point(60, 12); $filterBox.Width = 240; $filterBox.Text = $InitialFilter
     $hint = New-Object System.Windows.Forms.Label
     $hint.Text = 'Check projects and Launch, or highlight an open (green) project and Switch to bring it forward.'
-    $hint.Location = New-Object System.Drawing.Point(400, 16); $hint.AutoSize = $true
+    $hint.Location = New-Object System.Drawing.Point(414, 16); $hint.AutoSize = $true
 
     $lv = New-Object System.Windows.Forms.ListView
     $lv.View = 'Details'; $lv.CheckBoxes = $true; $lv.FullRowSelect = $true; $lv.GridLines = $true; $lv.HideSelection = $false
@@ -1085,7 +1158,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
 
     # Update notice: replaces the hint line when a newer release exists. Hooks are scriptblocks from the main script.
     $updLink = New-Object System.Windows.Forms.LinkLabel
-    $updLink.AutoSize = $true; $updLink.Location = New-Object System.Drawing.Point(400, 16); $updLink.Visible = $false
+    $updLink.AutoSize = $true; $updLink.Location = New-Object System.Drawing.Point(414, 16); $updLink.Visible = $false
     $ctx.UpdInfo = $null; $ctx.UpdTask = $null; $ctx.UpdForced = $false
     $showUpdate = {
         param($info)
@@ -1152,13 +1225,6 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
         }
     }.GetNewClosure())
 
-    $chkFresh = New-Object System.Windows.Forms.CheckBox
-    $chkFresh.Text = 'Fresh sessions (no --continue)'; $chkFresh.Checked = $InitialFresh; $chkFresh.AutoSize = $true
-    $chkFresh.Location = New-Object System.Drawing.Point(12, 584); $chkFresh.Anchor = 'Bottom,Left'
-    $chkKeep = New-Object System.Windows.Forms.CheckBox
-    $chkKeep.Text = 'Keep open after launch'; $chkKeep.Checked = $KeepOpen; $chkKeep.AutoSize = $true
-    $chkKeep.Location = New-Object System.Drawing.Point(220, 584); $chkKeep.Anchor = 'Bottom,Left'
-
     function New-Btn($text, $x, $isDefault) {
         $b = New-Object System.Windows.Forms.Button
         $b.Text = $text; $b.Size = New-Object System.Drawing.Size(90, 28)
@@ -1175,13 +1241,12 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
     $btnClose   = New-Btn 'Close' 1040
     $btnClose.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
     $form.AcceptButton = $btnGo; $form.CancelButton = $btnClose
-    $form.Controls.AddRange(@($lbl, $filterBox, $hint, $updLink, $lv, $status, $help, $chkFresh, $chkKeep, $btnSettings, $btnIde, $btnGit, $btnArrange, $btnRefresh, $btnSwitch, $btnGo, $btnClose))
+    $form.Controls.AddRange(@($lbl, $filterBox, $btnNew, $hint, $updLink, $lv, $status, $help, $btnSettings, $btnIde, $btnGit, $btnArrange, $btnRefresh, $btnSwitch, $btnGo, $btnClose))
 
     $ctrlTip = New-Object System.Windows.Forms.ToolTip
     $ctrlTip.InitialDelay = 400; $ctrlTip.AutoPopDelay = 12000
+    $ctrlTip.SetToolTip($btnNew, 'Create a new project folder in your projects folder: optionally run git init, add a README and open it in your IDE. The list reloads with it pre-checked.')
     $ctrlTip.SetToolTip($filterBox, 'Type to narrow the list by project name or path. Checked projects stay checked while you filter.')
-    $ctrlTip.SetToolTip($chkFresh, 'Start plain "claude" instead of "claude --continue", even for projects with earlier sessions.')
-    $ctrlTip.SetToolTip($chkKeep, 'Leave this picker open after launching so you can launch more or Switch to open workspaces. Untick to close after Launch.')
     $ctrlTip.SetToolTip($btnSettings, 'Edit config.json (global defaults) or presets.json (per-project overrides) in your default editor (changes apply the next time the picker starts), or save the positions of your open project windows so Launch restores them.')
     $ctrlTip.SetToolTip($btnIde, 'Open the checked and the highlighted projects in your IDE, one new window per project. Visual Studio Code by default; set "ide" (and "ideArgs") in config.json to use another.')
     $ctrlTip.SetToolTip($btnGit, 'Git actions for the highlighted project: open its repository in your browser, initialize a local git repository, or create a new GitHub repository (in an organization you pick) and add it as origin. Also on the right-click menu of a row.')
@@ -1190,6 +1255,8 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
     $ctrlTip.SetToolTip($btnSwitch, 'Bring the highlighted project''s open tab and its terminal window to the foreground. Works for projects marked open.')
     $ctrlTip.SetToolTip($btnGo, 'Open the checked projects (or the highlighted one), each in its own new Windows Terminal window with a Claude Code tab and a shell tab. Projects already open are brought to the front instead; hold Shift while clicking to open a new copy anyway.')
     $ctrlTip.SetToolTip($btnClose, 'Close the picker without launching anything.')
+    $ctrlTip.SetToolTip($help, 'Open this project on GitHub, its open issues, or the new-issue page.')
+    $ctrlTip.SetToolTip($updLink, "What's new: read the release notes.  Update now: install the new version in place (settings are kept) and restart the picker.  Skip this version: hide this notice until a newer release appears.")
 
     $green = [System.Drawing.Color]::FromArgb(222, 245, 226)
 
@@ -1280,6 +1347,14 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
         if ($opt[0] -eq '-') { [void]$arrMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)); continue }
         $mi = $arrMenu.Items.Add($opt[0]); $style = $opt[1]
         if ($style -eq 'cascade') { $ctx.CascadeItem = $mi }
+        $mi.ToolTipText = @{
+            cascade = 'Overlap the open project windows, each offset so every title bar stays visible.'
+            grid    = 'Tile the open project windows in a grid that fills the screen.'
+            columns = 'Put the open project windows side by side.'
+            rows    = 'Stack the open project windows top to bottom.'
+            resize  = 'Give every open project window the default size (windowWidth x windowHeight); positions stay.'
+            none    = 'Only move windows that have a saved spot (Settings > Save window layout).'
+        }[$style]
         $mi.Add_Click({
             try {
                 $shift = [bool]([System.Windows.Forms.Control]::ModifierKeys -band [System.Windows.Forms.Keys]::Shift)
@@ -1289,59 +1364,15 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
         }.GetNewClosure())
     }
     $btnArrange.Add_Click({ $arrMenu.Show($btnArrange, (New-Object System.Drawing.Point(0, $btnArrange.Height))) }.GetNewClosure())
-    # Git: GitOps actions for the highlighted project (also the list's right-click menu). Items are enabled
+    # Git: GitOps actions for the highlighted project (the Git button, and the Git submenu of the right-click menu). Items are enabled
     # only where they apply; anything that changes the project asks first (see Invoke-PickerGitOp).
     $gitMenu = New-Object System.Windows.Forms.ContextMenuStrip
-    $miGitOpen = $gitMenu.Items.Add('Open repository in browser')
-    $miGitInit = $gitMenu.Items.Add('Initialize local repository (git init)...')
-    $miGitRemote = New-Object System.Windows.Forms.ToolStripMenuItem 'Create remote repository'
-    [void]$gitMenu.Items.Add($miGitRemote)
     $ctx.GitTargets = @(Get-GitTargets)
-    $miGitUrl = $gitMenu.Items.Add('Add existing remote URL...')
     $ctx.GitRow = {
         if ($lv.SelectedItems.Count -eq 0) { return $null }
         $path = [string]$lv.SelectedItems[0].Tag
         $Rows | Where-Object { $_.Path -eq $path } | Select-Object -First 1
     }.GetNewClosure()
-    $gitMenu.Add_Opening({
-        param($s, $e)
-        $row = & $ctx.GitRow
-        if (-not $row) {
-            foreach ($mi in @($miGitOpen, $miGitInit, $miGitRemote)) { $mi.Enabled = $false; $mi.ToolTipText = 'Highlight a project first.' }
-            return
-        }
-        $isGit = Test-Path -LiteralPath (Join-Path $row.Path '.git')
-        $miGitOpen.Enabled = [bool]$row.RemoteUrl
-        $miGitOpen.ToolTipText = $(if ($row.RemoteUrl) { [string]$row.RemoteUrl } else { 'This project has no remote yet.' })
-        $miGitInit.Enabled = -not $isGit
-        $miGitInit.ToolTipText = $(if ($isGit) { 'Already a git repository.' } else { "Run git init in $($row.Path)." })
-        $miGitRemote.Enabled = -not $row.RemoteUrl
-        # Submenu per provider; configured targets (gitOpsTargets) are listed first, then "Other...".
-        $miGitUrl.Enabled = -not $row.RemoteUrl
-        $miGitUrl.ToolTipText = $(if ($row.RemoteUrl) { 'This project already has a remote.' } else { 'Attach a repository you already created on any host, by URL.' })
-        $miGitRemote.DropDownItems.Clear()
-        foreach ($pv in 'github','gitlab','azure') {
-            $label = @{ github = 'GitHub'; gitlab = 'GitLab'; azure = 'Azure DevOps' }[$pv]
-            $sub = New-Object System.Windows.Forms.ToolStripMenuItem $label
-            foreach ($t in @($ctx.GitTargets | Where-Object { $_.Provider -eq $pv })) {
-                $it = $sub.DropDownItems.Add([string]$t.Owner)
-                $key = "$pv|$($t.Owner)"
-                $it.Add_Click({ & $ctx.RunGit 'remote' $key }.GetNewClosure())
-            }
-            if ($pv -eq 'github') {
-                $me = $sub.DropDownItems.Add('My own account'); $me.Add_Click({ & $ctx.RunGit 'remote' 'github|@me' }.GetNewClosure())
-            }
-            if ($sub.DropDownItems.Count) { [void]$sub.DropDownItems.Add('-') }
-            $key2 = "$pv|"
-            $other = $sub.DropDownItems.Add('Other...'); $other.Add_Click({ & $ctx.RunGit 'remote' $key2 }.GetNewClosure())
-            [void]$miGitRemote.DropDownItems.Add($sub)
-        }
-        $miGitRemote.ToolTipText = $(if ($row.RemoteUrl) { 'This project already has a remote.' } else { 'Create a repository on GitHub (gh), GitLab (glab) or Azure DevOps (az) and add it as origin. Runs git init first if needed.' })
-    }.GetNewClosure())
-    $miGitOpen.Add_Click({
-        $row = & $ctx.GitRow
-        if ($row -and $row.RemoteUrl) { try { Start-Process ([string]$row.RemoteUrl) } catch { $status.Text = "Could not open $($row.RemoteUrl)" } }
-    }.GetNewClosure())
     $runGit = {
         param($op, $owner)
         $row = & $ctx.GitRow
@@ -1351,17 +1382,193 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
         & $fill
     }.GetNewClosure()
     $ctx.RunGit = $runGit
-    $miGitInit.Add_Click({ & $runGit 'init' }.GetNewClosure())
-    $miGitUrl.Add_Click({ & $runGit 'addurl' '' }.GetNewClosure())
+    # Menu items created while a menu opens cannot rely on closure capture (nested closures see none of this function's
+    # variables), so each item carries { Fn = scriptblock; A = args } in its Tag and shares this one handler.
+    $menuClick = { param($sender, $e) $tg = $sender.Tag; if ($tg -and $tg.Fn) { $a = @($tg.A); & $tg.Fn @a } }   # @a splats; @($tg.A) would pass ONE array argument
+    $actGitOpen = {
+        $r = & $ctx.GitRow
+        if ($r -and $r.RemoteUrl) { try { Start-Process ([string]$r.RemoteUrl) } catch { $status.Text = "Could not open $($r.RemoteUrl)" } }
+    }.GetNewClosure()
+    # Builds the Git items into any menu (the Git button's menu and the right-click Git submenu) each time it opens,
+    # so enabled states always match the highlighted project.
+    $fillGit = {
+        param($items)
+        $items.Clear()
+        $row = & $ctx.GitRow
+        $isGit = $row -and (Test-Path -LiteralPath (Join-Path $row.Path '.git'))
+        $mOpen = $items.Add('Open repository in browser')
+        $mInit = $items.Add('Initialize local repository (git init)...')
+        $mRemote = New-Object System.Windows.Forms.ToolStripMenuItem 'Create remote repository'
+        [void]$items.Add($mRemote)
+        $mUrl = $items.Add('Add existing remote URL...')
+        if (-not $row) {
+            foreach ($mi in @($mOpen, $mInit, $mRemote, $mUrl)) { $mi.Enabled = $false; $mi.ToolTipText = 'Highlight a project first.' }
+            return
+        }
+        $mOpen.Enabled = [bool]$row.RemoteUrl
+        $mOpen.ToolTipText = $(if ($row.RemoteUrl) { [string]$row.RemoteUrl } else { 'This project has no remote yet.' })
+        $mOpen.Tag = @{ Fn = $actGitOpen; A = @() }; $mOpen.Add_Click($menuClick)
+        $mInit.Enabled = -not $isGit
+        $mInit.ToolTipText = $(if ($isGit) { 'Already a git repository.' } else { "Run git init in $($row.Path)." })
+        $mInit.Tag = @{ Fn = $runGit; A = @('init', '') }; $mInit.Add_Click($menuClick)
+        $mRemote.Enabled = -not $row.RemoteUrl
+        $mRemote.ToolTipText = $(if ($row.RemoteUrl) { 'This project already has a remote.' } else { 'Create a repository on GitHub (gh), GitLab (glab) or Azure DevOps (az) and add it as origin. Runs git init first if needed.' })
+        $mUrl.Enabled = -not $row.RemoteUrl
+        $mUrl.ToolTipText = $(if ($row.RemoteUrl) { 'This project already has a remote.' } else { 'Attach a repository you already created on any host, by URL.' })
+        $mUrl.Tag = @{ Fn = $runGit; A = @('addurl', '') }; $mUrl.Add_Click($menuClick)
+        # Submenu per provider; configured targets (gitOpsTargets) are listed first, then "Other...".
+        foreach ($pv in 'github','gitlab','azure') {
+            $label = @{ github = 'GitHub'; gitlab = 'GitLab'; azure = 'Azure DevOps' }[$pv]
+            $sub = New-Object System.Windows.Forms.ToolStripMenuItem $label
+            $sub.ToolTipText = "Create a new repository on $label and add it as origin."
+            foreach ($t in @($ctx.GitTargets | Where-Object { $_.Provider -eq $pv })) {
+                $it = $sub.DropDownItems.Add([string]$t.Owner)
+                $it.ToolTipText = "Create the repository under $($t.Owner) on $label (you confirm the name and visibility next)."
+                $it.Tag = @{ Fn = $runGit; A = @('remote', "$pv|$($t.Owner)") }; $it.Add_Click($menuClick)
+            }
+            if ($pv -eq 'github') {
+                $me = $sub.DropDownItems.Add('My own account'); $me.ToolTipText = 'Create the repository under your own GitHub account.'; $me.Tag = @{ Fn = $runGit; A = @('remote', 'github|@me') }; $me.Add_Click($menuClick)
+            }
+            if ($sub.DropDownItems.Count) { [void]$sub.DropDownItems.Add('-') }
+            $other = $sub.DropDownItems.Add('Other...'); $other.ToolTipText = "Type the owner yourself in the create dialog ($label)."; $other.Tag = @{ Fn = $runGit; A = @('remote', "$pv|") }; $other.Add_Click($menuClick)
+            [void]$mRemote.DropDownItems.Add($sub)
+        }
+    }.GetNewClosure()
+    $gitMenu.Add_Opening({ & $fillGit $gitMenu.Items }.GetNewClosure())
     $btnGit.Add_Click({ $gitMenu.Show($btnGit, (New-Object System.Drawing.Point(0, $btnGit.Height))) }.GetNewClosure())
-    $lv.ContextMenuStrip = $gitMenu
+
+    # Right-click menu on a project row: Launch / Switch / IDE / Git submenus. Launch, Switch and IDE act on the
+    # highlighted project(s); Git acts on the first highlighted one.
+    $rowMenu = New-Object System.Windows.Forms.ContextMenuStrip
+    $ctx.ClaudeVariants = @($cfg.claudeVariants | Where-Object { $_ -and $_.name -and $_.args })
+    $ctx.IdeName = [string]$cfg.ide; if (-not $ctx.IdeName) { $ctx.IdeName = 'code' }
+    $selRows = {
+        @($lv.SelectedItems | ForEach-Object { $p = [string]$_.Tag; $Rows | Where-Object { $_.Path -eq $p } | Select-Object -First 1 } | Where-Object { $_ })
+    }.GetNewClosure()
+    $doLaunch = {
+        param($mode, $fresh, $force, $session, $extra)
+        $paths = @(& $selRows | ForEach-Object { $_.Path })
+        if (-not $paths.Count) { return }
+        try { & $OnLaunch $paths ([bool]$fresh) ([bool]$force) ([string]$mode) ([string]$session) ([string]$extra) } catch { $status.Text = "Launch failed: $_"; return }
+        $status.Text = 'Launched {0} project(s). Rechecking open tabs shortly...' -f $paths.Count
+        $timer.Stop(); $timer.Start()
+    }.GetNewClosure()
+    $doSwitch = {
+        param($tab)
+        $r = @(& $selRows)[0]; if (-not $r) { return }
+        if (& $OnSwitch $r.Name ([string]$tab)) {
+            $status.Text = "Switched to $($r.Name)."
+        } else { $status.Text = "No open $tab tab found for $($r.Name)." }
+    }.GetNewClosure()
+    $reloadAfter = {
+        param($res)
+        if ($res.Ok) {
+            [void][System.Windows.Forms.MessageBox]::Show($form, "$($res.Message)`n`nThe picker will restart to reload the list.", 'Done', 'OK', 'Information')
+            & $Update.Restart; $form.Close()
+        } elseif ($res.Message -and $res.Message -ne 'Cancelled.') {
+            $status.Text = [string]$res.Message
+            [void][System.Windows.Forms.MessageBox]::Show($form, [string]$res.Message, 'Could not complete that', 'OK', 'Warning')
+        } else { $status.Text = 'Cancelled.' }
+    }.GetNewClosure()
+    $actNewProject = { & $reloadAfter (& $Actions.NewProject $form) }.GetNewClosure()
+    $actRename = {
+        $r = @(& $selRows)[0]; if (-not $r) { return }
+        & $reloadAfter (& $Actions.RenameProject $r $form)
+    }.GetNewClosure()
+    $actIde = {
+        $paths = @(& $selRows | ForEach-Object { $_.Path })
+        try { $status.Text = [string](& $OnIde $paths) } catch { $status.Text = "Could not open the IDE: $_" }
+    }.GetNewClosure()
+    $actExplorer = {
+        foreach ($r in @(& $selRows)) { try { Start-Process -FilePath 'explorer.exe' -ArgumentList "`"$($r.Path)`"" } catch { $status.Text = "Could not open Explorer: $_" } }
+    }.GetNewClosure()
+    $actCopy = {
+        try { [System.Windows.Forms.Clipboard]::SetText((@(& $selRows | ForEach-Object { $_.Path }) -join "`r`n")); $status.Text = 'Copied the path.' } catch { $status.Text = "Could not copy: $_" }
+    }.GetNewClosure()
+    $gitDropOpen = { param($sender, $e) & $fillGit $sender.DropDownItems }.GetNewClosure()
+    $rowMenu.Add_Opening({
+        param($s, $e)
+        $s.Items.Clear()
+        $sel = @(& $selRows)
+        if (-not $sel.Count) {   # right-click on empty space: just the New project item
+            $np = $s.Items.Add('New project...'); $np.ToolTipText = 'Create a new project folder in your projects folder (optionally git init, README, open in IDE).'
+            $np.Tag = @{ Fn = $actNewProject; A = @() }; $np.Add_Click($menuClick)
+            return
+        }
+        $title = $(if ($sel.Count -eq 1) { $sel[0].Name } else { "$($sel.Count) highlighted projects" })
+        $hdr = $s.Items.Add($title); $hdr.Enabled = $false
+        [void]$s.Items.Add('-')
+        # Launch >
+        $mL = New-Object System.Windows.Forms.ToolStripMenuItem 'Launch'; [void]$s.Items.Add($mL)
+        $launchOpts = @(
+            @('Claude + shell (default)', 'both', $false, $false, 'Open the project the usual way: a Claude tab and a shell tab in a new window. An already-open project is brought to the front instead.'),
+            @('Claude only', 'claude', $false, $true, 'Open just a Claude Code tab in a new window (no shell tab, no extra tabs).'),
+            @('Shell only', 'shell', $false, $true, 'Open just a shell tab in a new window (with the git status summary in a git repository).'),
+            @('-'),
+            @('New window even if already open', 'both', $false, $true, 'Open another copy of the project even if it already has tabs open.')
+        )
+        foreach ($o in $launchOpts) {
+            if ($o[0] -eq '-') { [void]$mL.DropDownItems.Add('-'); continue }
+            $it = $mL.DropDownItems.Add($o[0]); $it.ToolTipText = $o[4]
+            $it.Tag = @{ Fn = $doLaunch; A = @($o[1], $o[2], $o[3], 'auto', '') }; $it.Add_Click($menuClick)
+        }
+        # Launch > Claude session >  (how the Claude tab starts); your own variants come from config.json "claudeVariants".
+        $mC = New-Object System.Windows.Forms.ToolStripMenuItem 'Claude session'
+        $mC.ToolTipText = 'Choose how Claude starts in a new Claude + shell window.'
+        [void]$mL.DropDownItems.Insert(3, $mC)
+        $sessOpts = @(
+            @('Continue the last conversation  (--continue)', 'continue', '', 'Reopen the most recent conversation for this folder.'),
+            @('Pick a conversation to resume  (--resume)', 'resume', '', 'Start Claude with its conversation picker so you can choose which earlier session to resume.'),
+            @('Start a fresh conversation', 'fresh', '', 'Start plain "claude" with no earlier conversation.')
+        )
+        foreach ($v in $ctx.ClaudeVariants) { $sessOpts += ,@([string]$v.name, 'auto', [string]$v.args, "Claude + shell with extra arguments: claude $($v.args)  (from claudeVariants in config.json)") }
+        $i = 0
+        foreach ($o in $sessOpts) {
+            if ($i -eq 3) { [void]$mC.DropDownItems.Add('-') }
+            $i++
+            $it = $mC.DropDownItems.Add($o[0]); $it.ToolTipText = $o[3]
+            $it.Tag = @{ Fn = $doLaunch; A = @('both', $false, $true, $o[1], $o[2]) }; $it.Add_Click($menuClick)
+        }
+        # Switch >
+        $mS = New-Object System.Windows.Forms.ToolStripMenuItem 'Switch'; [void]$s.Items.Add($mS)
+        $isOpen = $ctx.Running.Contains($sel[0].Name)
+        foreach ($o in @(@('Claude tab', 'claude', 'Select the project''s Claude tab (cc:) and bring its window to the front.'), @('Shell tab', 'shell', 'Select the project''s shell tab (sh:) and bring its window to the front.'), @('Whichever is open', 'any', 'Bring the project''s window to the front (Claude tab first).'))) {
+            $it = $mS.DropDownItems.Add($o[0]); $it.ToolTipText = $o[2]
+            $it.Enabled = $isOpen
+            if (-not $isOpen) { $it.ToolTipText = 'This project has no open tab. Use Launch.' }
+            $it.Tag = @{ Fn = $doSwitch; A = @($o[1]) }; $it.Add_Click($menuClick)
+        }
+        # IDE >
+        $mI = New-Object System.Windows.Forms.ToolStripMenuItem 'IDE'; [void]$s.Items.Add($mI)
+        $it = $mI.DropDownItems.Add("Open in $($ctx.IdeName)"); $it.ToolTipText = 'Open the highlighted project(s) in your IDE, one new window each (config "ide").'
+        $it.Tag = @{ Fn = $actIde; A = @() }; $it.Add_Click($menuClick)
+        $it = $mI.DropDownItems.Add('Open folder in File Explorer'); $it.ToolTipText = 'Show the project folder in Windows File Explorer.'
+        $it.Tag = @{ Fn = $actExplorer; A = @() }; $it.Add_Click($menuClick)
+        $it = $mI.DropDownItems.Add('Copy path'); $it.ToolTipText = 'Copy the project folder path to the clipboard.'
+        $it.Tag = @{ Fn = $actCopy; A = @() }; $it.Add_Click($menuClick)
+        # Git >
+        $mG = New-Object System.Windows.Forms.ToolStripMenuItem 'Git'; [void]$s.Items.Add($mG)
+        [void]$mG.DropDownItems.Add('...')   # placeholder so the arrow shows; filled when the submenu opens
+        $mG.Add_DropDownOpening($gitDropOpen)
+        [void]$s.Items.Add('-')
+        $rn = $s.Items.Add('Rename project...'); $rn.ToolTipText = 'Rename the project folder and carry its Claude history, preset and window position along. Close its terminal tabs first.'
+        $rn.Enabled = ($sel.Count -eq 1); if ($sel.Count -ne 1) { $rn.ToolTipText = 'Highlight a single project to rename it.' }
+        $rn.Tag = @{ Fn = $actRename; A = @() }; $rn.Add_Click($menuClick)
+    }.GetNewClosure())
+    $lv.ContextMenuStrip = $rowMenu
     # Settings: open the JSON files in the default editor (created from the example files if missing).
     $menu = New-Object System.Windows.Forms.ContextMenuStrip
     $miCfg = $menu.Items.Add('Edit config.json (global defaults)')
     $miPre = $menu.Items.Add('Edit presets.json (per-project overrides)')
     $miLay = $menu.Items.Add('Save window layout (remember where open projects are)')
     $miUpd = $menu.Items.Add('Check for updates now')
+    $miRoot = $menu.Items.Add('Change projects folder...')
     $miLog = $menu.Items.Add('Changelog (what changed in each version)')
+    $miCfg.ToolTipText = 'Open config.json (global defaults) in your editor. Changes apply the next time the picker starts.'
+    $miPre.ToolTipText = 'Open presets.json (per-project extra tabs, apps, Claude arguments, tab color) in your editor.'
+    $miLay.ToolTipText = 'Remember where each open project window is; later launches put them back (per monitor setup).'
+    $miUpd.ToolTipText = 'Look for a newer GitHub release now, even if you skipped it.'
+    $miLog.ToolTipText = 'Open CHANGELOG.md: what changed in each version.'
     $miCfg.Add_Click({
         try {
             New-Item -ItemType Directory -Force -Path $ctx.ConfigDir | Out-Null
@@ -1374,6 +1581,12 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
             if (-not (Test-Path -LiteralPath $ctx.PresetFile) -and (Test-Path -LiteralPath $ctx.PresetExample)) { Copy-Item -LiteralPath $ctx.PresetExample -Destination $ctx.PresetFile }
             Start-Process -FilePath $ctx.PresetFile; $status.Text = 'Opened presets.json. Restart the picker to apply changes.'
         } catch { $status.Text = "Could not open presets.json: $_" }
+    }.GetNewClosure())
+    $btnNew.Add_Click({ & $actNewProject }.GetNewClosure())
+    $miRoot.ToolTipText = 'Choose which folder holds your projects (each subfolder is a project). Saved as "root" in config.json; the picker restarts.'
+    $miRoot.Add_Click({
+        $p = & $Actions.ChooseRoot
+        if ($p) { & $Update.Restart; $form.Close() }
     }.GetNewClosure())
     $miLog.Add_Click({ if (-not (& $Update.Changelog)) { $status.Text = 'Could not open the changelog.' } }.GetNewClosure())
     $miUpd.Add_Click({
@@ -1393,7 +1606,6 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
         $name = ($Rows | Where-Object { $_.Path -eq $path } | Select-Object -First 1).Name
         if (& $OnSwitch $name) {
             $status.Text = "Switched to $name."
-            if (-not $chkKeep.Checked) { $form.Close() }
         } else {
             $status.Text = "No open tab found for $name (use Launch to open it)."
         }
@@ -1409,15 +1621,11 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
         if ($ctx.Checked.Count -eq 0) { $status.Text = 'Check at least one project to launch.'; return }
         $paths = @($ctx.Checked)
         $force = [bool]([System.Windows.Forms.Control]::ModifierKeys -band [System.Windows.Forms.Keys]::Shift)   # Shift+Launch = open a new copy even if already open
-        & $OnLaunch $paths $chkFresh.Checked $force
-        if ($chkKeep.Checked) {
-            $ctx.Checked.Clear()
-            & $fill
-            $status.Text = 'Launched {0} project(s). Rechecking open tabs shortly...' -f $paths.Count
-            $timer.Stop(); $timer.Start()
-        } else {
-            $form.Close()
-        }
+        & $OnLaunch $paths $false $force
+        $ctx.Checked.Clear()
+        & $fill
+        $status.Text = 'Launched {0} project(s). Rechecking open tabs shortly...' -f $paths.Count
+        $timer.Stop(); $timer.Start()
     }.GetNewClosure())
     # Coming back to the picker (e.g. after switching away) re-checks which tabs are open.
     $form.Add_Activated({ if ($ctx.Clock.ElapsedMilliseconds -gt 3000) { & $refresh } }.GetNewClosure())
@@ -1440,9 +1648,9 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
             if ($hk.Register($spec.Mods, $spec.Vk)) {
                 # Pressing it cascades every open workspace, then brings the Wrangler itself up on top of them.
                 $hk.add_Pressed({
-                    try { $n = & $OnCascade; $status.Text = "Cascaded $n workspace window(s)." } catch { $status.Text = "Cascade failed: $_" }
+                    # Restore the Wrangler if minimized, then cascade it together with the workspace windows (it ends up on top).
                     if ($form.WindowState -eq [System.Windows.Forms.FormWindowState]::Minimized) { $form.WindowState = [System.Windows.Forms.FormWindowState]::Normal }
-                    $form.TopMost = $true; $form.Activate(); $form.TopMost = $false
+                    try { $n = & $OnCascade $form.Handle.ToInt64(); $status.Text = "Cascaded $n workspace window(s) and the Wrangler." } catch { $status.Text = "Cascade failed: $_" }
                 }.GetNewClosure())
                 # Make the hotkey discoverable in the app itself.
                 $hotText = [string]$cfg.hotkey
@@ -1460,9 +1668,9 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect, [
 }
 
 # ---------------------------------------------------------------- launch (build + start wt)
-function Invoke-Launch($Selected, [bool]$FreshRun, [bool]$Remember, [bool]$ForceNew = $false) {
+function Invoke-Launch($Selected, [bool]$FreshRun, [bool]$Remember, [bool]$ForceNew = $false, [string]$Mode = 'both', [string]$Session = 'auto', [string]$ExtraArgs = '') {
     $groups = @(); $groupNames = @()
-    $extraApps = @()
+    $extraApps = @(); $consumed = @()
     # Projects that already have a tab open are brought to the foreground instead of being launched a second time.
     $open = @(); if (-not $ForceNew) { $open = @(Get-RunningNames) }
     $toFocus = @()
@@ -1479,19 +1687,36 @@ function Invoke-Launch($Selected, [bool]$FreshRun, [bool]$Remember, [bool]$Force
         if ($wantColor) { $color = Get-TabColor $p.Name; if ($preset -and $preset.tabColor) { $color = [string]$preset.tabColor } }
 
         # claude --continue only when prior session history exists (and not fresh).
+        # $Session: auto (continue if there is history, unless -Fresh) | continue | resume (claude's session picker) | fresh.
         $parts = @('claude')
-        if ((Test-ClaudeHistory $p.Path) -and -not $FreshRun) { $parts += '--continue' }
+        switch ($Session) {
+            'continue' { $parts += '--continue' }
+            'resume'   { $parts += '--resume' }
+            'fresh'    { }
+            default    { if ((Test-ClaudeHistory $p.Path) -and -not $FreshRun) { $parts += '--continue' } }
+        }
         if ($cArgs.Trim()) { $parts += ($cArgs.Trim() -replace ';', '\;') }   # args must not contain double quotes
+        $xa = ($ExtraArgs -replace '"', '').Trim()                              # variant args from config.json (claudeVariants)
+        if ($xa) { $parts += ($xa -replace ';', '\;') }
+        # A message left for Claude (e.g. after Rename project) is sent once as the session's first message. It goes through a
+        # file so quotes and spaces cannot upset the wt command line.
+        if ($Mode -ne 'shell' -and $Session -ne 'resume' -and $state.pending.ContainsKey($p.Path) -and ([string]$state.pending[$p.Path]).Trim()) {
+            $pf = Join-Path $ConfigDir "pending\$($p.Name).txt"
+            if (-not $DryRun) { New-Item -ItemType Directory -Force -Path (Split-Path -Parent $pf) | Out-Null; Set-Content -LiteralPath $pf -Value ([string]$state.pending[$p.Path]) -NoNewline -Encoding UTF8 }
+            $parts += "(Get-Content -Raw -LiteralPath $(ConvertTo-PsLiteral $pf))"
+            $consumed += $p.Path
+        }
         # Tab titles: Claude tab = "cc:<project>", every other tab = "sh:<scope>" (kept short; detection depends on them).
         $pc = @()
-        $pc += New-TabClause "cc:$($p.Name)" $p.Path ($parts -join ' ') $color
+        # $Mode: both (default) | claude (only the Claude tab) | shell (only a shell tab).
+        if ($Mode -ne 'shell') { $pc += New-TabClause "cc:$($p.Name)" $p.Path ($parts -join ' ') $color }
 
-        if ($pShell) {
+        if (($pShell -and $Mode -eq 'both') -or $Mode -eq 'shell') {
             $shellCmd = $null
             if ($pDiff -and (Test-Path -LiteralPath (Join-Path $p.Path '.git'))) { $shellCmd = 'git status -sb\; git diff --stat' }
             $pc += New-TabClause "sh:$($p.Name)" $p.Path $shellCmd $color
         }
-        if ($preset) {
+        if ($preset -and $Mode -eq 'both') {
             foreach ($t in @($preset.extraTabs)) {
                 if (-not $t) { continue }
                 if (-not (Test-Path -LiteralPath $t.path)) { Write-Warning "Directory not found: $($t.path)"; continue }
@@ -1514,6 +1739,7 @@ function Invoke-Launch($Selected, [bool]$FreshRun, [bool]$Remember, [bool]$Force
     }
 
     if ($Remember -and -not $DryRun) { $state.last = @($Selected | ForEach-Object { $_.Path }); Save-State }
+    if ($consumed.Count -and -not $DryRun) { foreach ($c in $consumed) { $state.pending.Remove($c) }; Save-State }   # sent once
     if ($DryRun) {
         foreach ($n in $toFocus) { Write-Output "FOCUS (already open): $n" }
         foreach ($c in $calls) { Write-Output $c }
@@ -1532,7 +1758,7 @@ function Invoke-Launch($Selected, [bool]$FreshRun, [bool]$Remember, [bool]$Force
     }
 }
 
-# ---------------------------------------------------------------- -CheckUpdate (agent-friendly, no UI)
+# ---------------------------------------------------------------- -CheckUpdate (no UI)
 if ($CheckUpdate) {
     $t = Start-UpdateCheck $true
     $info = $null; $ok = $false
@@ -1545,7 +1771,7 @@ if ($CheckUpdate) {
     return
 }
 
-# ---------------------------------------------------------------- -Cascade (hotkey / agent, no UI)
+# ---------------------------------------------------------------- -Cascade (no UI)
 if ($Cascade) {
     $n = Invoke-CascadeFront
     if (-not $n) { Write-Warning 'No open workspace windows found.'; exit 1 }
@@ -1553,23 +1779,344 @@ if ($Cascade) {
     return
 }
 
-# ---------------------------------------------------------------- -Focus (agent-friendly, no UI)
+# ---------------------------------------------------------------- -Focus (no UI)
 if ($Focus) {
     if (Switch-ToProject $Focus) { return }
     Write-Warning "No open tab found for: $Focus"; exit 1
 }
 
+# ---------------------------------------------------------------- project management: new / rename
+# With the Git menu, these are the only places the Wrangler changes your files, and only after you confirm.
+function Test-ProjectName([string]$Name, [string]$ParentDir, [string]$Current = '') {
+    $n = $Name.Trim()
+    if (-not $n) { return 'Enter a name.' }
+    if ($n -match '[\/:*?"<>|]') { return 'A folder name cannot contain  \ / : * ? " < > |' }
+    if ($n -match '[. ]$') { return 'A folder name cannot end with a dot or a space.' }
+    if ($n.StartsWith('.')) { return 'Names starting with a dot are hidden from the project list.' }
+    if ($n -match '^(CON|PRN|AUX|NUL|COM\d|LPT\d)(\..*)?$') { return "'$n' is a reserved Windows name." }
+    if ($n -ine $Current -and (Test-Path -LiteralPath (Join-Path $ParentDir $n))) { return 'A folder with that name already exists here.' }
+    $null
+}
+
+# Dialog: name for a new project (+ git init / README / open in IDE). Returns $null or { Name, GitInit, Readme, OpenIde }.
+function Show-NewProjectDialog($OwnerForm, [string]$ParentDir) {
+    $dlg = New-Object System.Windows.Forms.Form
+    $dlg.Text = 'New project'; $dlg.ClientSize = New-Object System.Drawing.Size(470, 230)
+    $dlg.FormBorderStyle = 'FixedDialog'; $dlg.MaximizeBox = $false; $dlg.MinimizeBox = $false; $dlg.StartPosition = 'CenterParent'
+    $l1 = New-Object System.Windows.Forms.Label; $l1.Text = 'Project name:'; $l1.AutoSize = $true; $l1.Location = New-Object System.Drawing.Point(12, 16)
+    $txt = New-Object System.Windows.Forms.TextBox; $txt.Location = New-Object System.Drawing.Point(110, 12); $txt.Width = 350
+    $where = New-Object System.Windows.Forms.Label; $where.Location = New-Object System.Drawing.Point(12, 44); $where.Size = New-Object System.Drawing.Size(448, 32)
+    $chkGit = New-Object System.Windows.Forms.CheckBox; $chkGit.Text = 'Initialize a git repository (git init)'; $chkGit.Checked = $true; $chkGit.AutoSize = $true; $chkGit.Location = New-Object System.Drawing.Point(110, 82)
+    $chkRead = New-Object System.Windows.Forms.CheckBox; $chkRead.Text = 'Create a README.md'; $chkRead.Checked = $true; $chkRead.AutoSize = $true; $chkRead.Location = New-Object System.Drawing.Point(110, 108)
+    $chkIde = New-Object System.Windows.Forms.CheckBox; $chkIde.Text = 'Open it in my IDE afterwards'; $chkIde.Checked = $false; $chkIde.AutoSize = $true; $chkIde.Location = New-Object System.Drawing.Point(110, 134)
+    $err = New-Object System.Windows.Forms.Label; $err.ForeColor = [System.Drawing.Color]::Firebrick; $err.Location = New-Object System.Drawing.Point(12, 160); $err.Size = New-Object System.Drawing.Size(448, 20)
+    $ok = New-Object System.Windows.Forms.Button; $ok.Text = 'Create'; $ok.Location = New-Object System.Drawing.Point(274, 190); $ok.Size = New-Object System.Drawing.Size(90, 28)
+    $cancel = New-Object System.Windows.Forms.Button; $cancel.Text = 'Cancel'; $cancel.Location = New-Object System.Drawing.Point(374, 190); $cancel.Size = New-Object System.Drawing.Size(90, 28)
+    $cancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    $ok.DialogResult = [System.Windows.Forms.DialogResult]::OK
+    $dlg.AcceptButton = $ok; $dlg.CancelButton = $cancel
+    $dlg.Controls.AddRange(@($l1, $txt, $where, $chkGit, $chkRead, $chkIde, $err, $ok, $cancel))
+    $tip = New-Object System.Windows.Forms.ToolTip
+    $tip.SetToolTip($txt, 'The new folder name (letters, digits, spaces, "-" and "_" are safest).')
+    $tip.SetToolTip($chkGit, 'Run git init in the new folder so it is a repository from the start.')
+    $tip.SetToolTip($chkRead, 'Create a README.md containing the project name as a heading.')
+    $tip.SetToolTip($chkIde, 'Open the new folder in your IDE (config "ide") right after creating it.')
+    $tip.SetToolTip($ok, 'Create the folder in your projects folder and add it to the list.')
+    $tip.SetToolTip($cancel, 'Close without creating anything.')
+    $upd = { $e = Test-ProjectName $txt.Text $ParentDir; $err.Text = $(if ($txt.Text.Trim()) { [string]$e } else { '' }); $where.Text = "Will be created at: $(Join-Path $ParentDir $txt.Text.Trim())"; $ok.Enabled = ($txt.Text.Trim() -and -not $e) }.GetNewClosure()
+    $txt.Add_TextChanged($upd); & $upd
+    $res = $dlg.ShowDialog($OwnerForm); $out = $null
+    if ($res -eq [System.Windows.Forms.DialogResult]::OK) { $out = [pscustomobject]@{ Name = $txt.Text.Trim(); GitInit = $chkGit.Checked; Readme = $chkRead.Checked; OpenIde = $chkIde.Checked } }
+    $dlg.Dispose(); $out
+}
+
+# Dialog: new name for an existing project, plus an optional message for Claude's next session in it.
+# Returns $null or { Name, Note } (Note is empty when unticked).
+function Show-RenameDialog($OwnerForm, $Row) {
+    $parent = Split-Path -Parent $Row.Path
+    $old = $Row.Name
+    $dlg = New-Object System.Windows.Forms.Form
+    $dlg.Text = "Rename $old"; $dlg.ClientSize = New-Object System.Drawing.Size(470, 348)
+    $dlg.FormBorderStyle = 'FixedDialog'; $dlg.MaximizeBox = $false; $dlg.MinimizeBox = $false; $dlg.StartPosition = 'CenterParent'
+    $l1 = New-Object System.Windows.Forms.Label; $l1.Text = 'New name:'; $l1.AutoSize = $true; $l1.Location = New-Object System.Drawing.Point(12, 16)
+    $txt = New-Object System.Windows.Forms.TextBox; $txt.Location = New-Object System.Drawing.Point(90, 12); $txt.Width = 370; $txt.Text = $old
+    $err = New-Object System.Windows.Forms.Label; $err.ForeColor = [System.Drawing.Color]::Firebrick; $err.Location = New-Object System.Drawing.Point(12, 40); $err.Size = New-Object System.Drawing.Size(448, 20)
+    $info = New-Object System.Windows.Forms.Label; $info.Location = New-Object System.Drawing.Point(12, 66); $info.Size = New-Object System.Drawing.Size(448, 112)
+    $info.Text = "The folder is renamed in place ($parent).`n`nAlso updated so nothing is lost: its Claude conversation history (so --continue keeps working), its entry in presets.json, its saved window position and the remembered selection.`n`nClose its terminal tabs and IDE window first."
+    $chk = New-Object System.Windows.Forms.CheckBox; $chk.Text = 'Tell Claude about the rename the next time I launch this project'; $chk.Checked = $true; $chk.AutoSize = $true; $chk.Location = New-Object System.Drawing.Point(12, 184)
+    $note = New-Object System.Windows.Forms.TextBox; $note.Multiline = $true; $note.ScrollBars = 'Vertical'; $note.Location = New-Object System.Drawing.Point(12, 210); $note.Size = New-Object System.Drawing.Size(448, 82)
+    $ok = New-Object System.Windows.Forms.Button; $ok.Text = 'Rename'; $ok.Location = New-Object System.Drawing.Point(274, 308); $ok.Size = New-Object System.Drawing.Size(90, 28)
+    $cancel = New-Object System.Windows.Forms.Button; $cancel.Text = 'Cancel'; $cancel.Location = New-Object System.Drawing.Point(374, 308); $cancel.Size = New-Object System.Drawing.Size(90, 28)
+    $cancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    $ok.DialogResult = [System.Windows.Forms.DialogResult]::OK
+    $dlg.AcceptButton = $ok; $dlg.CancelButton = $cancel
+    $dlg.Controls.AddRange(@($l1, $txt, $err, $info, $chk, $note, $ok, $cancel))
+    $tip = New-Object System.Windows.Forms.ToolTip
+    $tip.SetToolTip($txt, 'The new folder name.')
+    $tip.SetToolTip($chk, 'Claude cannot know the folder was renamed. When ticked, this message is sent as the first message of the next Claude session you launch for the project (once), so it can fix references to the old name or path.')
+    $tip.SetToolTip($note, 'Edit the message if you like. It is sent to Claude as your first message on the next launch of this project.')
+    $tip.SetToolTip($ok, 'Rename the folder and carry its Claude history, preset and window position along.')
+    $tip.SetToolTip($cancel, 'Close without changing anything.')
+    $st = @{ Edited = $false; Setting = $false }
+    $mk = { param($n) "I just renamed this project's folder from '$old' to '$n'. Please update any artifacts that refer to the old name or path (docs, configs, scripts, memory) as appropriate." }.GetNewClosure()
+    $upd = {
+        $changed = ($txt.Text.Trim() -cne $old); $e = $null
+        if ($changed) { $e = Test-ProjectName $txt.Text $parent $old }
+        $err.Text = [string]$e; $ok.Enabled = ($changed -and -not $e)
+        if (-not $st.Edited) { $st.Setting = $true; $note.Text = & $mk $txt.Text.Trim(); $st.Setting = $false }   # follows the name until you edit it yourself
+    }.GetNewClosure()
+    $txt.Add_TextChanged($upd)
+    $note.Add_TextChanged({ if (-not $st.Setting) { $st.Edited = $true } }.GetNewClosure())
+    $chk.Add_CheckedChanged({ $note.Enabled = $chk.Checked }.GetNewClosure())
+    & $upd
+    $dlg.Add_Shown({ $txt.Focus(); $txt.SelectAll() }.GetNewClosure())
+    $res = $dlg.ShowDialog($OwnerForm); $out = $null
+    if ($res -eq [System.Windows.Forms.DialogResult]::OK) {
+        $n = ''; if ($chk.Checked) { $n = (($note.Text -replace '[\r\n]+', ' ') -replace '"', "'").Trim() }
+        $out = [pscustomobject]@{ Name = $txt.Text.Trim(); Note = $n }
+    }
+    $dlg.Dispose(); $out
+}
+
+# Creates the folder (+ optional git init / README) under the projects root and remembers it as the selection. { Ok, Message, Path }.
+function Invoke-NewProject($Opts) {
+    $r = [pscustomobject]@{ Ok = $false; Message = ''; Path = '' }
+    $err = Test-ProjectName $Opts.Name $Root
+    if ($err) { $r.Message = $err; return $r }
+    $path = Join-Path $Root $Opts.Name; $r.Path = $path
+    if ($DryRun) { $r.Message = "Dry run: would create $path" + $(if ($Opts.GitInit) { ', run git init' } else { '' }) + $(if ($Opts.Readme) { ' and add README.md' } else { '' }) + '.'; return $r }
+    try { New-Item -ItemType Directory -Path $path -ErrorAction Stop | Out-Null } catch { $r.Message = "Could not create the folder: $_"; return $r }
+    $notes = @("Created $path")
+    if ($Opts.GitInit) { $g = Invoke-GitOp 'init' $path $null; if ($g.Ok) { $notes += 'initialized git' } else { $notes += "git init failed ($($g.Message))" } }
+    if ($Opts.Readme) { try { Set-Content -LiteralPath (Join-Path $path 'README.md') -Value "# $($Opts.Name)`r`n" -Encoding UTF8; $notes += 'added README.md' } catch { $notes += "README failed: $_" } }
+    $state.last = @($path); Save-State           # pre-checked in the list after the picker restarts
+    if ($Opts.OpenIde) { $notes += (Invoke-OpenIde @($path)) }
+    $r.Ok = $true; $r.Message = ($notes -join '; ') + '.'
+    $r
+}
+
+# Renames a project folder and moves what refers to it by name or path. { Ok, Message }.
+function Invoke-RenameProject($Row, [string]$NewName, [string]$Note = '') {
+    $r = [pscustomobject]@{ Ok = $false; Message = '' }
+    $old = [string]$Row.Path; $parent = Split-Path -Parent $old; $new = Join-Path $parent $NewName
+    $err = Test-ProjectName $NewName $parent $Row.Name
+    if ($err) { $r.Message = $err; return $r }
+    if (@(Get-RunningNames) -contains $Row.Name) { $r.Message = "$($Row.Name) has terminal tabs open. Close them first (Windows cannot rename a folder that is in use), then rename."; return $r }
+    if ($DryRun) { $r.Message = "Dry run: would rename $old to $new and move its Claude history, preset, saved window position and selection."; return $r }
+    try { Rename-Item -LiteralPath $old -NewName $NewName -ErrorAction Stop }
+    catch { $r.Message = "Could not rename the folder. Is a terminal, IDE or other program using it? $_"; return $r }
+    $notes = @("Renamed $($Row.Name) to $NewName")
+    $enc = { param($p) $p -replace '[^A-Za-z0-9]', '-' }
+    $oldH = Join-Path $env:USERPROFILE ".claude\projects\$(& $enc $old)"; $newH = Join-Path $env:USERPROFILE ".claude\projects\$(& $enc $new)"
+    if ((Test-Path -LiteralPath $oldH) -and -not (Test-Path -LiteralPath $newH)) {
+        try { Move-Item -LiteralPath $oldH -Destination $newH -ErrorAction Stop; $notes += 'moved its Claude history' } catch { $notes += "could not move its Claude history ($_)" }
+    }
+    $pf = Join-Path $ConfigDir 'presets.json'
+    if (Test-Path -LiteralPath $pf) {
+        try {
+            $arr = @(); foreach ($x in (Get-Content -LiteralPath $pf -Raw | ConvertFrom-Json)) { $arr += $x }; $hit = $false
+            foreach ($e in $arr) { if ([string]$e.name -ieq $Row.Name) { $e.name = $NewName; $hit = $true } }
+            if ($hit) { ConvertTo-Json -InputObject $arr -Depth 8 | Set-Content -LiteralPath $pf -Encoding UTF8; $notes += 'updated presets.json' }
+        } catch { $notes += "could not update presets.json ($_)" }
+    }
+    $lf = Join-Path $ConfigDir 'layouts.json'
+    if (Test-Path -LiteralPath $lf) {
+        try {
+            $all = Get-Content -LiteralPath $lf -Raw | ConvertFrom-Json; $hit = $false
+            foreach ($sig in $all.PSObject.Properties) {
+                $pp = $sig.Value.PSObject.Properties[$Row.Name]
+                if ($pp) { $val = $pp.Value; $sig.Value.PSObject.Properties.Remove($Row.Name); $sig.Value | Add-Member -NotePropertyName $NewName -NotePropertyValue $val; $hit = $true }
+            }
+            if ($hit) { $all | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $lf -Encoding UTF8; $notes += 'moved its saved window position' }
+        } catch { $notes += "could not update layouts.json ($_)" }
+    }
+    $state.last = @($state.last | ForEach-Object { if ($_ -ieq $old) { $new } else { $_ } })
+    if ($state.pending.ContainsKey($old)) { $state.pending.Remove($old) }
+    if ($Note.Trim()) { $state.pending[$new] = $Note.Trim(); $notes += 'Claude will be told about the rename on its next launch' }
+    Save-State
+    $r.Ok = $true; $r.Message = ($notes -join '; ') + '.'
+    $r
+}
+
+# Picker side: dialog, confirmation, action. Returns { Ok; Message } (Ok = the list needs a reload).
+function Invoke-PickerNewProject($OwnerForm) {
+    $opts = Show-NewProjectDialog $OwnerForm $Root
+    if (-not $opts) { return [pscustomobject]@{ Ok = $false; Message = 'Cancelled.' } }
+    Invoke-NewProject $opts
+}
+function Invoke-PickerRenameProject($Row, $OwnerForm) {
+    $dlgRes = Show-RenameDialog $OwnerForm $Row
+    if (-not $dlgRes) { return [pscustomobject]@{ Ok = $false; Message = 'Cancelled.' } }
+    $new = $dlgRes.Name
+    $q = "Rename this project?`n`n$($Row.Path)`n  to`n$(Join-Path (Split-Path -Parent $Row.Path) $new)`n`nIts Claude history, preset, saved window position and selection move with it."
+    if ([System.Windows.Forms.MessageBox]::Show($OwnerForm, $q, 'Rename project', 'YesNo', 'Question') -ne [System.Windows.Forms.DialogResult]::Yes) { return [pscustomobject]@{ Ok = $false; Message = 'Cancelled.' } }
+    Invoke-RenameProject $Row $new $dlgRes.Note
+}
+
+# ---------------------------------------------------------------- first run: where are the projects?
+# Project folders your tools already know about: Claude Code's list (~\.claude.json "projects", real paths) and the folders
+# VS Code (and its forks) have opened. Read-only, local files only; nothing is sent anywhere.
+function Get-ToolProjectPaths {
+    $found = @()
+    try {
+        Add-Type -AssemblyName System.Web.Extensions
+        $js = New-Object System.Web.Script.Serialization.JavaScriptSerializer; $js.MaxJsonLength = [int]::MaxValue
+    } catch { return @() }
+    $cj = Join-Path $env:USERPROFILE '.claude.json'
+    if (Test-Path -LiteralPath $cj) {
+        try {
+            $d = $js.DeserializeObject((Get-Content -LiteralPath $cj -Raw))
+            if ($d.ContainsKey('projects')) { foreach ($k in $d['projects'].Keys) { $found += [pscustomobject]@{ Path = ([string]$k -replace '/', '\'); Source = 'Claude Code' } } }
+        } catch { }
+    }
+    foreach ($app in 'Code', 'Code - Insiders', 'VSCodium', 'Cursor', 'Windsurf') {
+        $f = Join-Path $env:APPDATA "$app\User\globalStorage\storage.json"
+        if (-not (Test-Path -LiteralPath $f)) { continue }
+        try {
+            $d = $js.DeserializeObject((Get-Content -LiteralPath $f -Raw))
+            $uris = @()
+            if ($d.ContainsKey('profileAssociations') -and $d['profileAssociations'].ContainsKey('workspaces')) { $uris += @($d['profileAssociations']['workspaces'].Keys) }
+            if ($d.ContainsKey('backupWorkspaces') -and $d['backupWorkspaces'].ContainsKey('folders')) { foreach ($e in $d['backupWorkspaces']['folders']) { if ($e.ContainsKey('folderUri')) { $uris += [string]$e['folderUri'] } } }
+            if ($d.ContainsKey('windowsState')) {
+                $ws = $d['windowsState']
+                if ($ws.ContainsKey('lastActiveWindow') -and $ws['lastActiveWindow'].ContainsKey('folder')) { $uris += [string]$ws['lastActiveWindow']['folder'] }
+                if ($ws.ContainsKey('openedWindows')) { foreach ($w in $ws['openedWindows']) { if ($w.ContainsKey('folder')) { $uris += [string]$w['folder'] } } }
+            }
+            foreach ($u in $uris) {
+                if ([string]$u -match '^file:///(.+)$') { $found += [pscustomobject]@{ Path = ([uri]::UnescapeDataString($Matches[1]) -replace '/', '\'); Source = $(if ($app -eq 'Code') { 'VS Code' } else { $app }) } }
+            }
+        } catch { }
+    }
+    $found
+}
+
+# Folders that look like a place people keep projects: parents of projects your tools opened, plus common names,
+# ranked by how many projects/repositories they hold.
+function Find-ProjectRootCandidates {
+    $h = $env:USERPROFILE
+    $byPath = @{}
+    function Add-Cand($path) { if (-not $byPath.ContainsKey($path)) { $byPath[$path] = [pscustomobject]@{ Path = $path; Folders = 0; Repos = 0; Opened = 0; Sources = @() } }; $byPath[$path] }
+    # 1. Parents of the projects Claude Code / VS Code know about.
+    $seen = @{}
+    foreach ($t in @(Get-ToolProjectPaths)) {
+        $p = ([string]$t.Path).TrimEnd('\')
+        if ($p.Length -le 3 -or $p -ieq $h -or $h -like "$p\*") { continue }                 # drive root, home folder, or a parent of home
+        if (-not (Test-Path -LiteralPath $p -PathType Container)) { continue }
+        $parent = Split-Path -Parent $p
+        if (-not $parent -or $parent.Length -le 3 -or $parent -ieq $h -or $h -like "$parent\*") { continue }
+        if ($parent -like "$h\AppData*" -or $parent -like "$h\.*") { continue }                             # tool internals, not projects
+        $c = Add-Cand $parent
+        if (-not $seen.ContainsKey($p.ToLowerInvariant())) { $seen[$p.ToLowerInvariant()] = $true; $c.Opened++ }
+        if ($c.Sources -notcontains $t.Source) { $c.Sources += $t.Source }
+    }
+    # 2. Folders with common names.
+    $names = 'code', 'repos', 'source\repos', 'src', 'dev', 'projects', 'git', 'workspace', 'Documents\GitHub', 'Documents\Projects', 'Documents\Code', 'GitHub'
+    $paths = @(); foreach ($n in $names) { $paths += (Join-Path $h $n) }
+    foreach ($d in [System.IO.DriveInfo]::GetDrives()) {
+        if ($d.DriveType -eq 'Fixed' -and $d.IsReady) { foreach ($n in 'code', 'repos', 'src', 'dev', 'projects', 'git') { $paths += (Join-Path $d.Name $n) } }
+    }
+    foreach ($p in ($paths | Select-Object -Unique)) { if (Test-Path -LiteralPath $p -PathType Container) { [void](Add-Cand $p) } }
+    # 3. Count what is inside each candidate; drop the empty ones.
+    $out = @()
+    foreach ($c in $byPath.Values) {
+        $subs = @(Get-ChildItem -LiteralPath $c.Path -Directory -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike '.*' })
+        if (-not $subs.Count) { continue }
+        if ($c.Opened -eq 1 -and $subs.Count -lt 3) { continue }                                          # a lone one-off, not a projects folder
+        $c.Folders = $subs.Count
+        $c.Repos = @($subs | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName '.git') }).Count
+        $out += $c
+    }
+    @($out | Sort-Object @{ Expression = 'Opened'; Descending = $true }, @{ Expression = 'Repos'; Descending = $true }, @{ Expression = 'Folders'; Descending = $true } | Select-Object -First 8)
+}
+
+# Writes one key into the user's config.json (creating it from the example file if needed). No-op under -DryRun.
+function Set-ConfigValue([string]$Key, $Value) {
+    if ($DryRun) { return }
+    try {
+        New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
+        $f = Join-Path $ConfigDir 'config.json'
+        $ex = Join-Path $PSScriptRoot 'config.example.json'
+        if (-not (Test-Path -LiteralPath $f) -and (Test-Path -LiteralPath $ex)) { Copy-Item -LiteralPath $ex -Destination $f }
+        $o = $null
+        if (Test-Path -LiteralPath $f) { $o = Get-Content -LiteralPath $f -Raw | ConvertFrom-Json }
+        if (-not $o) { $o = [pscustomobject]@{} }
+        if ($o.PSObject.Properties[$Key]) { $o.$Key = $Value } else { $o | Add-Member -NotePropertyName $Key -NotePropertyValue $Value }
+        ($o | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $f -Encoding UTF8
+    } catch { Write-Warning "Could not save $Key to config.json: $_" }
+}
+
+# "Where are your projects?" dialog. Returns the chosen folder or $null.
+function Show-RootDialog($Candidates, [string]$Message) {
+    Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing
+    $dlg = New-Object System.Windows.Forms.Form
+    $dlg.Text = 'Workspace Wrangler: where are your projects?'; $dlg.ClientSize = New-Object System.Drawing.Size(560, 330)
+    $dlg.FormBorderStyle = 'FixedDialog'; $dlg.MaximizeBox = $false; $dlg.MinimizeBox = $false; $dlg.StartPosition = 'CenterScreen'
+    $lbl = New-Object System.Windows.Forms.Label
+    $lbl.Location = New-Object System.Drawing.Point(12, 10); $lbl.Size = New-Object System.Drawing.Size(536, 64)
+    $lbl.Text = "$Message`n`nWorkspace Wrangler lists the subfolders of one folder as your projects. Pick the folder that contains your project folders, or browse to it."
+    $lst = New-Object System.Windows.Forms.ListBox
+    $lst.Location = New-Object System.Drawing.Point(12, 80); $lst.Size = New-Object System.Drawing.Size(536, 190)
+    $paths = New-Object System.Collections.ArrayList
+    foreach ($c in @($Candidates)) {
+        [void]$paths.Add($c.Path)
+        $desc = "$($c.Folders) folders"; if ($c.Repos) { $desc = "$($c.Repos) git repositories, $($c.Folders) folders" }
+        if ($c.Opened) { $desc = "$($c.Opened) opened in $(@($c.Sources) -join ' / '); $desc" }
+        [void]$lst.Items.Add("$($c.Path)   ($desc)")
+    }
+    if ($lst.Items.Count) { $lst.SelectedIndex = 0 }
+    $browse = New-Object System.Windows.Forms.Button; $browse.Text = 'Browse...'; $browse.Location = New-Object System.Drawing.Point(12, 284); $browse.Size = New-Object System.Drawing.Size(100, 28)
+    $ok = New-Object System.Windows.Forms.Button; $ok.Text = 'Use this folder'; $ok.Location = New-Object System.Drawing.Point(318, 284); $ok.Size = New-Object System.Drawing.Size(130, 28)
+    $cancel = New-Object System.Windows.Forms.Button; $cancel.Text = 'Cancel'; $cancel.Location = New-Object System.Drawing.Point(458, 284); $cancel.Size = New-Object System.Drawing.Size(90, 28)
+    $cancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    $ok.DialogResult = [System.Windows.Forms.DialogResult]::OK
+    $ok.Enabled = ($lst.SelectedIndex -ge 0)
+    $dlg.AcceptButton = $ok; $dlg.CancelButton = $cancel
+    $dlg.Controls.AddRange(@($lbl, $lst, $browse, $ok, $cancel))
+    $tip = New-Object System.Windows.Forms.ToolTip
+    $tip.SetToolTip($lst, 'Folders that hold projects you opened in Claude Code or VS Code, or that look like project folders (most opened projects first).')
+    $tip.SetToolTip($browse, 'Pick any other folder. Each of its subfolders becomes a project in the list.')
+    $tip.SetToolTip($ok, 'Remember this folder (saved as "root" in config.json) and open the picker.')
+    $tip.SetToolTip($cancel, 'Close without choosing. You will be asked again next time.')
+    $lst.Add_SelectedIndexChanged({ $ok.Enabled = ($lst.SelectedIndex -ge 0) }.GetNewClosure())
+    $lst.Add_DoubleClick({ if ($lst.SelectedIndex -ge 0) { $dlg.DialogResult = [System.Windows.Forms.DialogResult]::OK; $dlg.Close() } }.GetNewClosure())
+    $browse.Add_Click({
+        $fb = New-Object System.Windows.Forms.FolderBrowserDialog
+        $fb.Description = 'Choose the folder that contains your project folders'
+        if ($fb.ShowDialog($dlg) -eq [System.Windows.Forms.DialogResult]::OK) {
+            [void]$paths.Add($fb.SelectedPath); [void]$lst.Items.Add($fb.SelectedPath); $lst.SelectedIndex = $lst.Items.Count - 1
+        }
+    }.GetNewClosure())
+    $res = $dlg.ShowDialog()
+    $out = $null
+    if ($res -eq [System.Windows.Forms.DialogResult]::OK -and $lst.SelectedIndex -ge 0) { $out = [string]$paths[$lst.SelectedIndex] }
+    $dlg.Dispose()
+    $out
+}
+
 # ---------------------------------------------------------------- discover
-if (-not (Test-Path -LiteralPath $Root)) { Write-Warning "Root not found: $Root"; exit 1 }
+# First run (or a moved/empty projects folder): ask where the projects are instead of failing silently. Picker only; the command-line switches never prompt.
+if (-not $PSBoundParameters.ContainsKey('Root') -and $Picker -eq 'Forms' -and -not ($List -or $All -or $Cascade -or $Focus -or $CheckUpdate -or $Project.Count)) {
+    $why = ''
+    if (-not (Test-Path -LiteralPath $Root -PathType Container)) { $why = "The projects folder `"$Root`" does not exist on this computer." }
+    elseif (-not @(Get-ChildItem -LiteralPath $Root -Directory -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike '.*' }).Count) { $why = "The projects folder `"$Root`" has no folders in it." }
+    if ($why) {
+        $pick = Show-RootDialog @(Find-ProjectRootCandidates) $why
+        if (-not $pick) { exit 0 }
+        $Root = $pick; Set-ConfigValue 'root' $pick
+    }
+}
+if (-not (Test-Path -LiteralPath $Root)) { Write-Warning "Root not found: $Root. Set `"root`" in config.json (or pass -Root <folder>)."; exit 1 }
 
 $dirs = @(Get-ChildItem -LiteralPath $Root -Directory -Force |
     Where-Object { $Ignore -notcontains $_.Name -and $_.Name -notlike '.*' })
 
-function New-Row($d, [bool]$Scan, [bool]$Git) {
-    $la = $null
-    if ($Scan) { $la = Get-LastActive $d.FullName }
-    $gi = $null
-    if ($Git) { $gi = Get-GitInfo $d.FullName }
+function New-Row($d, [bool]$Scan, [bool]$Git, $Facts) {
+    $la = $null; $gi = $null
+    if ($Facts -and $Facts.ContainsKey($d.FullName)) { $la = $Facts[$d.FullName].La; $gi = $Facts[$d.FullName].Gi }   # computed in parallel
+    else {
+        if ($Scan) { $la = Get-LastActive $d.FullName }
+        if ($Git) { $gi = Get-GitInfo $d.FullName }
+    }
     $hasGit = Test-Path -LiteralPath (Join-Path $d.FullName '.git')
     [pscustomobject]@{
         Name = $d.Name; Path = $d.FullName
@@ -1599,7 +2146,8 @@ if ($Project.Count -gt 0 -and -not $List) {
 }
 
 $needGit = [bool]$cfg.gitInfo -and ($List -or ($Picker -eq 'Forms' -and -not $All))
-$rows = @($dirs | ForEach-Object { New-Row $_ $true $needGit } | Sort-Object LastActiveDt -Descending)
+$facts = Get-ProjectFacts $dirs $true $needGit
+$rows = @($dirs | ForEach-Object { New-Row $_ $true $needGit $facts } | Sort-Object LastActiveDt -Descending)
 if ($Filter) { $rows = @($rows | Where-Object { $_.Name -like "*$Filter*" -or $_.Path -like "*$Filter*" }) }
 if ($Project.Count -gt 0) { $rows = @($rows | Where-Object { $Project -contains $_.Name -or $Project -contains $_.Path }) }
 if ($Top -gt 0 -and -not $All) { $rows = @($rows | Select-Object -First $Top) }
@@ -1630,17 +2178,20 @@ if ($All) {
 } else {
     # Callbacks stay as scriptblocks defined HERE so they keep script scope when invoked from WinForms closures.
     $onLaunch = {
-        param($paths, $fresh, $force)
+        param($paths, $fresh, $force, $mode, $session, $extra)
         $sel = @($rows | Where-Object { $paths -contains $_.Path })
-        Invoke-Launch $sel ([bool]$fresh -or [bool]$Fresh) $true ([bool]$force)
+        if (-not $mode) { $mode = 'both' }
+        if (-not $session) { $session = 'auto' }
+        Invoke-Launch $sel ([bool]$fresh -or [bool]$Fresh) $true ([bool]$force) ([string]$mode) ([string]$session) ([string]$extra)
         if (-not $DryRun) { Save-State }
     }
-    $onSwitch  = { param($name) Switch-ToProject $name }
+    $onSwitch  = { param($name, $tab) if (-not $tab) { $tab = 'any' }; Switch-ToProject $name ([string]$tab) }
     $getRunning = { Get-RunningNames }
     $onSaveLayout = { Save-WindowLayout }
     $onArrange = { param($style, $ignoreSaved) Invoke-ArrangeOpen ([string]$style) ([bool]$ignoreSaved) }
     $onGitOp = { param($op, $row, $form, $preset) Invoke-PickerGitOp ([string]$op) $row $form ([string]$preset) }
-    $onCascade = { Invoke-CascadeFront }
+    $onCascade = { param($self) Invoke-CascadeFront ([int64]$self) }
+    $actions = @{ NewProject = { param($owner) Invoke-PickerNewProject $owner }; RenameProject = { param($row, $owner) Invoke-PickerRenameProject $row $owner }; ChooseRoot = { $p = Show-RootDialog @(Find-ProjectRootCandidates) "Current projects folder: $Root"; if ($p) { Set-ConfigValue 'root' $p }; $p } }
     $onIde = { param($paths) Invoke-OpenIde ([string[]]$paths) }
     $update = @{
         Current = $AppVersion
@@ -1652,6 +2203,6 @@ if ($All) {
         Restart = { Restart-Wrangler }
         Changelog = { Open-Changelog }
     }
-    [void](Show-FormsPicker $rows $Filter @($state.last) ([bool]$Fresh) ([bool]$cfg.keepOpen) $onLaunch $onSwitch $getRunning ([int]$cfg.refreshSeconds) $onSaveLayout $onArrange $onGitOp $update $onIde $onCascade)
+    [void](Show-FormsPicker $rows $Filter @($state.last) $onLaunch $onSwitch $getRunning ([int]$cfg.refreshSeconds) $onSaveLayout $onArrange $onGitOp $update $onIde $onCascade $actions)
     if (-not $DryRun) { Save-State }
 }

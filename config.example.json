@@ -11,7 +11,6 @@
   "diff": true,
   "tabColors": true,
   "gitInfo": true,
-  "keepOpen": true,
   "checkForUpdates": true,
   "updateCheckHours": 24,
   "refreshSeconds": 60,
@@ -26,6 +25,9 @@
   "gitOpsVisibility": "private",
   "git": "git",
   "hotkey": "Ctrl+Alt+W",
+  "claudeVariants": [
+    { "name": "Plan mode", "args": "--permission-mode plan" }
+  ],
   "ide": "code",
   "ideArgs": "-n",
   "claudeArgs": ""

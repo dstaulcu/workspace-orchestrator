@@ -2,7 +2,7 @@
 
 # Workspace Wrangler
 
-> **Experimental (v0.6).** Windows only. Works on my machine; expect rough edges. Issues and ideas welcome.
+> Windows only (Windows Terminal, PowerShell 5.1 and Claude Code). Issues and ideas welcome.
 
 **Tame your sea of projects and terminals, and restart your whole workday in one click.**
 
@@ -12,7 +12,6 @@ A small picker that lists your project folders (newest activity first) and opens
 - **Always know what's open:** the picker marks projects that already have tabs open; **Switch** jumps to the right window, **Launch** never duplicates one.
 - **See where things stand:** last activity, branch, dirty/clean and a link to each repo's remote.
 - **Do the chores:** open projects in your IDE, create repositories on GitHub / GitLab / Azure DevOps, cascade all windows with a hotkey.
-- **Scriptable:** AI agents and scripts can drive it too (see [Agent mode](#agent-mode)).
 
 ## Install
 
@@ -24,7 +23,7 @@ A small picker that lists your project folders (newest activity first) and opens
    powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Install-Shortcut.ps1
    ```
    This puts one **Workspace Wrangler** shortcut on your Desktop.
-3. Double-click **Workspace Wrangler**. Projects are the subfolders of `C:\code` by default; change `root` under **Settings > Edit config.json**.
+3. Double-click **Workspace Wrangler**. Each subfolder of your projects folder is a project. If the default, `C:\code`, doesn't exist or is empty, the picker asks where your projects live: it suggests the folders your tools already use (where you opened projects in Claude Code or VS Code, found by reading their local history files; nothing is sent anywhere) and common ones such as `~\source\repos` or `~\src`, or you can **Browse...** to any folder, and it remembers the answer. Change it later under **Settings > Change projects folder...**.
 
 To try it without installing: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Start-WorkspaceWrangler.ps1`.
 **Update:** the picker offers new releases itself (see below). **Uninstall:** `.\Uninstall-WorkspaceWrangler.ps1` (add `-WhatIf` to preview, `-RemoveSettings` to also delete settings).
@@ -43,9 +42,13 @@ Check projects and press **Launch** (or Enter). Type in the filter box to narrow
 | **IDE** | Open every checked and highlighted project in your IDE, one window each (`ide`, default `code`). |
 | **Settings** | Edit `config.json` / `presets.json`, save window layout, check for updates, open the changelog. |
 
-**Fresh sessions** starts plain `claude` instead of `claude --continue`. **Keep open after launch** leaves the picker running. Tabs are titled `cc:<project>` and `sh:<scope>`; that is how open projects are found, so don't rename them.
+**Right-click a project** for finer control: **Launch** (Claude + shell, Claude only, shell only, a **Claude session** choice of continue / pick one to resume with `--resume` / fresh, or a new window even if already open), **Switch** (to its Claude tab or its shell tab), **IDE** (open in your IDE, open the folder in File Explorer, copy the path), **Git**, and **Rename project...**. Launch, Switch and IDE act on the highlighted projects; Git and Rename act on the first one. Add your own Claude variants (for example plan mode) with `claudeVariants` in `config.json`.
 
-**Hotkey:** while the picker is open (it can be minimized), **Ctrl+Alt+W** finds all open workspaces, restores minimized ones, cascades them and brings them to the front, with the picker itself on top. The hotkey is also shown in the picker (hint line, Arrange tooltip and menu). Change it with `hotkey` in `config.json` (empty turns it off); the picker says so in the status bar if another program already owns the key. Without the picker: `Start-WorkspaceWrangler.ps1 -Cascade`.
+The **+ New project** button beside the filter box (or a right-click in empty space) creates a folder in your projects folder, optionally runs `git init`, adds a README and opens it in your IDE, then reloads the list with it pre-checked. **Rename project** renames the folder and carries along its Claude conversation history (so `--continue` keeps working), its `presets.json` entry, its saved window position and the remembered selection; close its terminal tabs first, because Windows cannot rename a folder that is in use. The dialog also offers a message for Claude (editable, on by default): on the next launch of that project it is sent once as Claude's first message ("I just renamed this project's folder from X to Y. Please update any artifacts that refer to the old name or path..."), so references to the old name get fixed.
+
+For a fresh Claude conversation use right-click > **Launch > Claude session**, or `-Fresh` from the command line. The picker stays open after launching, so you can keep launching and switching. Tabs are titled `cc:<project>` and `sh:<scope>`; that is how open projects are found, so don't rename them.
+
+**Hotkey:** while the picker is open (it can be minimized), **Ctrl+Alt+W** finds all open workspaces, restores minimized ones and cascades them, and parks the Wrangler itself beside the cascade (top aligned with the first window, just right of the last one; against the screen's right edge if there is no room) so it never gets buried behind them. The hotkey is also shown in the picker (hint line, Arrange tooltip and menu). Change it with `hotkey` in `config.json` (empty turns it off); the picker says so in the status bar if another program already owns the key. Without the picker: `Start-WorkspaceWrangler.ps1 -Cascade`.
 
 **Window layout:** new windows are cascaded (`arrangeStyle`: `cascade`, `grid`, `columns`, `rows`). **Settings > Save window layout** remembers where each open project's window is, per monitor setup, and later launches put them back.
 
@@ -53,22 +56,20 @@ Check projects and press **Launch** (or Enter). Type in the filter box to narrow
 
 On startup the picker checks GitHub **releases** (at most daily, without slowing startup; nothing happens until a release is published). When a newer one exists you can click **What's new**, **Update now** (in place, with backup and rollback; settings are kept) or **Skip this version**. After an update it offers to open the [changelog](CHANGELOG.md), which is also under **Settings > Changelog**. Turn the check off with `checkForUpdates: false`.
 
-## Agent mode
+## Command line
 
-No UI, no dialogs. Projects already open are focused instead of launched again.
+Handy for per-project shortcuts and quick checks (no picker; open projects are focused instead of launched again):
 
 ```powershell
 $s = '.\Start-WorkspaceWrangler.ps1'
-powershell.exe -NoProfile -File $s -List -Top 5          # discover (JSON)
-powershell.exe -NoProfile -File $s -Project a,b -DryRun  # preview the wt command
-powershell.exe -NoProfile -File $s -Project a,b          # launch
-powershell.exe -NoProfile -File $s -All -Top 3           # launch the 3 most recent
-powershell.exe -NoProfile -File $s -Focus a              # raise a's open tab (exit 1 if not open)
-powershell.exe -NoProfile -File $s -Cascade              # cascade all open workspaces to the front
-powershell.exe -NoProfile -File $s -CheckUpdate          # JSON: current, latest, updateAvailable
+powershell.exe -NoProfile -File $s -Project a,b          # launch these projects
+powershell.exe -NoProfile -File $s -Project a,b -DryRun  # print the wt command instead
+powershell.exe -NoProfile -File $s -Focus a              # raise a's open tab
+powershell.exe -NoProfile -File $s -Cascade              # cascade all open workspaces
+powershell.exe -NoProfile -File $s -List                 # projects as JSON
 ```
 
-Other switches: `-Root`, `-Filter`, `-Fresh`, `-NoShell`, `-NoDiff`, `-NoColor`, `-Picker Grid` (plain list), `-Window <id>` (all tabs in one existing window).
+Also: `-All -Top N`, `-Root`, `-Filter`, `-Fresh`, `-NoShell`, `-NoDiff`, `-NoColor`, `-Picker Grid`, `-Window <id>`, `-CheckUpdate`.
 
 ## Configuration
 
@@ -76,10 +77,9 @@ Settings live outside the repo in `~\.config\workspace_wrangler\` (`config.json`
 
 ## Safety
 
-Launching never modifies your projects; the app writes only its own files in the settings folder. The only network call is the update check (one read of the public releases list). The **Git** menu is the one thing that changes a project, and only after you confirm; it uses your existing `gh` / `glab` / `az` sign-in and never sees a token.
+Launching never modifies your projects; the app writes only its own files in the settings folder. The only network call is the update check (one read of the public releases list). The **Git** menu, **New project** and **Rename project** are the only things that change your files, and only after you confirm; it uses your existing `gh` / `glab` / `az` sign-in and never sees a token.
 
 ## More
 
-- Design docs (requirements, design, tasks per feature): [`.kiro/specs/`](.kiro/specs/)
 - Ideas: macOS/Linux terminals, other agent CLIs, saved sets of projects, a test suite.
 - [MIT license](LICENSE)

@@ -6,6 +6,29 @@ version when you release.
 
 ## Unreleased
 
+## 1.0.0 - 2026-11-25
+
+First stable release: no more `-experimental` suffix or pre-release flag. Everything since 0.6.1 ships in it.
+
+### Added
+- **New project** (a **+ New project** button beside the filter box, also on a right-click in empty space) and **Rename project** (right-click menu). New creates the folder in your projects folder with optional `git init`, README and open-in-IDE. Rename moves the folder together with its Claude conversation history, `presets.json` entry, saved window position and remembered selection, and refuses while the project has terminal tabs open. The dialog can also leave Claude a message ("I just renamed this folder from X to Y, please update artifacts as appropriate", editable) that is sent once as the first message of the project's next launched Claude session. Both ask first and reload the list.
+- **Claude session** choices under right-click > Launch: continue the last conversation, pick one to resume (`claude --resume`), start fresh, plus your own variants from the new `claudeVariants` setting (the example config has *Plan mode*).
+- **Right-click menu on a project** with submenus: **Launch** (Claude + shell, Claude only, shell only, fresh session, new window even if open), **Switch** (Claude tab or shell tab), **IDE** (open in your IDE, open in File Explorer, copy path) and **Git** (the same items as the Git button). Launch, Switch and IDE act on all highlighted projects.
+- **First-run folder prompt:** if the projects folder (default `C:\code`) is missing or empty, the picker asks where your projects live instead of exiting silently. It suggests the folders your tools already use (the parents of projects you opened in Claude Code, read from `~\.claude.json`, and in VS Code / Cursor / VSCodium, read from their `storage.json`; most opened projects first) plus common names like `~\source
+epos`, lets you Browse, and saves the answer as `root` in `config.json`. **Settings > Change projects folder...** does the same later. Agent mode never prompts; it now says how to set `root`.
+
+### Fixed
+- **Right-click Switch, Launch and Git submenu items did nothing or got scrambled arguments** (their handlers lost their variables and passed their arguments as one array); they now work.
+- **Presets:** with two or more entries in `presets.json`, each project's lookup returned all of them mixed together, so its `shell`, `diff`, `claudeArgs` and tabs came from the wrong entries. Each project now gets only its own preset.
+
+### Changed
+- Removed the **Keep open after launch** checkbox and the `keepOpen` setting: the picker always stays open after launching. (An old `keepOpen` in your `config.json` is ignored.)
+- Dropped the "agent mode" framing: the README section is now a short *Command line* section, and `CLAUDE.md` no longer requires the command-line switches to stay UI-free (they just must not block on dialogs). All switches still work.
+- Removed the **Fresh sessions (no --continue)** checkbox from the picker; right-click > **Launch > Claude session** covers it per launch (`-Fresh` still works on the command line).
+- The cascade hotkey now also places the Wrangler: top aligned with the first window and just right of the last one (against the right edge of the screen if there is no room), keeping its own size, so it is never buried behind the cascaded windows.
+- **Faster startup** (about 3.3 s to 1.5 s on a 33-project folder): each project's last-active time and git info are now gathered in parallel, and git info needs two git calls per repository instead of four or more. Results are identical.
+- Every control now has a tooltip: dialog fields and buttons, the update notice, the help links, and the Arrange, Settings and Git menu items (including the provider submenus).
+
 ## 0.6.1 - 2026-11-24
 
 ### Changed

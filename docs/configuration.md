@@ -18,7 +18,7 @@ All three files live in `~\.config\workspace_wrangler\` (outside the repo, so up
 
 | Key | Type | Default | Meaning | Override |
 |---|---|---|---|---|
-| `root` | string | `C:\code` | Folder whose subfolders are the projects | `-Root` |
+| `root` | string | `C:\code` | Folder whose subfolders are the projects. If it is missing or empty the picker asks (and saves your answer here); also **Settings > Change projects folder...** | `-Root` |
 | `top` | int | `0` | Show only the N most recent; `0` = all (with `-All`: how many to launch, `0` = 15) | `-Top` |
 | `ignore` | string[] | `[]` | Folder names to skip | `-Ignore` |
 | `noiseDirs` | string[] | `.git`, `node_modules`, `.venv`, ... | Directories skipped when scanning a non-git project for its newest file | none |
@@ -29,7 +29,6 @@ All three files live in `~\.config\workspace_wrangler\` (outside the repo, so up
 | `diff` | bool | `true` | Run `git status -sb; git diff --stat` in git shell tabs | `-NoDiff`, preset |
 | `tabColors` | bool | `true` | Color tabs by project name | `-NoColor`, preset `tabColor` |
 | `gitInfo` | bool | `true` | Show branch / state / remote columns | none |
-| `keepOpen` | bool | `true` | Keep the picker open after launching | picker checkbox |
 | `checkForUpdates` | bool | `true` | Look for a newer GitHub release on startup and offer to update | none |
 | `updateCheckHours` | number | `24` | Minimum hours between automatic update checks | Settings > Check for updates now |
 | `updateRepo` | string | `dstaulcu/workspace-wrangler` | GitHub `owner/repo` whose releases are checked (for forks) | none |
@@ -44,6 +43,7 @@ All three files live in `~\.config\workspace_wrangler\` (outside the repo, so up
 | `refreshSeconds` | int | `60` | While the picker is open, re-check which projects have tabs open every N seconds (min 5; `0` = off) | none |
 | `git` | string | `git` | git to use: a command on PATH, or the full path to `git.exe` (portable installs) | all git calls |
 | `hotkey` | string | `Ctrl+Alt+W` | Global hotkey while the picker is open: cascade all open workspace windows to the front (needs a modifier; empty = off) | none |
+| `claudeVariants` | `{name, args}[]` | `[]` | Extra entries under right-click > Launch > Claude session; each starts Claude + shell with these arguments added (no double quotes), e.g. `{ "name": "Plan mode", "args": "--permission-mode plan" }` | menu |
 | `ide` | string | `code` | Command the **IDE** button runs (VS Code by default; e.g. `cursor`, or a full path) | button |
 | `ideArgs` | string | `-n` | Arguments before the folder (`-n` = new window per project) | button |
 | `claudeArgs` | string | `""` | Extra `claude` arguments (no double quotes) | preset |
