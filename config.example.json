@@ -22,6 +22,10 @@
   "windowHeight": 750,
   "restoreLayouts": true,
   "gitOpsOrg": "",
+  "gitOpsTargets": [],
   "gitOpsVisibility": "private",
+  "git": "git",
+  "ide": "code",
+  "ideArgs": "-n",
   "claudeArgs": ""
 }

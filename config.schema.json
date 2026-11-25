@@ -29,6 +29,10 @@
     "updateCheckHours": { "type": "number", "minimum": 0, "default": 24, "description": "Minimum hours between automatic update checks. Settings > Check for updates now always checks." },
     "updateRepo": { "type": "string", "default": "dstaulcu/workspace-wrangler", "description": "GitHub owner/repo whose releases are checked (change it if you run a fork)." },
     "keepOpen":     { "type": "boolean", "default": true, "description": "Keep the picker open after launching." },
+    "gitOpsTargets": { "type": "array", "default": [], "description": "Places offered under Git > Create remote repository. A string is a GitHub organization; an object is { provider: github|gitlab|azure, owner, host }. github needs gh, gitlab needs glab (owner = group/subgroup, host for self-managed), azure needs az with the azure-devops extension (owner = organization/project).", "items": { "oneOf": [ { "type": "string" }, { "type": "object", "properties": { "provider": { "enum": ["github","gitlab","azure"] }, "owner": { "type": "string" }, "host": { "type": "string" } }, "required": ["provider","owner"] } ] } },
+    "git":          { "type": "string", "default": "git", "description": "git to use: a command on PATH, or the full path to git.exe (or its folder) for a portable install." },
+    "ide":          { "type": "string", "default": "code", "description": "Command the picker's IDE button runs for each selected project (on PATH, or a full path). Default is Visual Studio Code." },
+    "ideArgs":      { "type": "string", "default": "-n", "description": "Arguments placed before the project folder. -n opens a new window per project in VS Code, Cursor and other forks." },
     "claudeArgs":   { "type": "string", "default": "", "description": "Extra arguments for claude in every project (no double quotes). Presets can override per project." }
   }
 }

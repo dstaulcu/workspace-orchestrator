@@ -1,0 +1,61 @@
+# Configuration reference
+
+Three small files, each with one job:
+
+```mermaid
+flowchart LR
+    CFG["config.json<br/>global defaults"] --> RUN(("Run"))
+    PRE["presets.json<br/>per-project overrides"] --> RUN
+    STA["state.json<br/>last selection<br/>(auto-written)"] --> RUN
+    CLI["Command-line switches"] --> RUN
+```
+
+Precedence: command-line switch > per-project preset > `config.json`.
+
+All three files live in `~\.config\workspace_wrangler\` (outside the repo, so updates never touch them; files from older versions next to the script are moved there on first run). Open `config.json` or `presets.json` from the picker with the **Settings** button, which creates them from [`config.example.json`](../config.example.json) / [`presets.example.json`](../presets.example.json) if missing. Changes apply the next time the picker starts. Both files have JSON schemas ([`config.schema.json`](../config.schema.json), [`presets.schema.json`](../presets.schema.json)) (`config.example.json` already references its schema; for `presets.json` map `presets.schema.json` in your editor's JSON settings) so editors like VS Code give hover help and validation.
+
+## `config.json`
+
+| Key | Type | Default | Meaning | Override |
+|---|---|---|---|---|
+| `root` | string | `C:\code` | Folder whose subfolders are the projects | `-Root` |
+| `top` | int | `0` | Show only the N most recent; `0` = all (with `-All`: how many to launch, `0` = 15) | `-Top` |
+| `ignore` | string[] | `[]` | Folder names to skip | `-Ignore` |
+| `noiseDirs` | string[] | `.git`, `node_modules`, `.venv`, ... | Directories skipped when scanning a non-git project for its newest file | none |
+| `maxScanFiles` | int | `5000` | Max files examined per non-git project | none |
+| `maxScanDepth` | int | `6` | Max folder depth of that scan | none |
+| `picker` | `Forms` \| `Grid` | `Forms` | Picker UI | `-Picker` |
+| `shell` | bool | `true` | Open a shell tab per project | `-NoShell`, preset |
+| `diff` | bool | `true` | Run `git status -sb; git diff --stat` in git shell tabs | `-NoDiff`, preset |
+| `tabColors` | bool | `true` | Color tabs by project name | `-NoColor`, preset `tabColor` |
+| `gitInfo` | bool | `true` | Show branch / state / remote columns | none |
+| `keepOpen` | bool | `true` | Keep the picker open after launching | picker checkbox |
+| `checkForUpdates` | bool | `true` | Look for a newer GitHub release on startup and offer to update | none |
+| `updateCheckHours` | number | `24` | Minimum hours between automatic update checks | Settings > Check for updates now |
+| `updateRepo` | string | `dstaulcu/workspace-wrangler` | GitHub `owner/repo` whose releases are checked (for forks) | none |
+| `arrangeOnLaunch` | bool | `true` | After launching 2+ projects, arrange the new windows on the primary screen | none |
+| `keepDesktopIconsClear` | bool | `true` | Arranged windows start at desktop-icon row 2, column 2 (first column/row of desktop icons stay visible) | none |
+| `windowWidth` / `windowHeight` | int | `1100` / `750` | Default window size in pixels for Cascade and Reset window size (clamped to the screen) | none |
+| `arrangeStyle` | `cascade` \| `grid` \| `columns` \| `rows` | `cascade` | How windows are arranged (overlapping cascade, grid, side by side, stacked) | Arrange menu |
+| `restoreLayouts` | bool | `true` | Put each project's new window where you last saved it (**Settings > Save window layout**; stored per monitor setup in `layouts.json`) | none |
+| `gitOpsOrg` | string | `""` | Organization pre-filled as owner in **Git > Create remote repository on GitHub** (blank = your own account) | dialog |
+| `gitOpsTargets` | array | `[]` | Entries for the **Git > Create remote repository** submenus: a string = GitHub organization, or `{ "provider": "gitlab", "owner": "group/sub", "host": "gitlab.example.com" }` (`github`, `gitlab` or `azure`; Azure owner = `org/project`) | submenu |
+| `gitOpsVisibility` | `private` \| `internal` \| `public` | `private` | Visibility pre-selected in that dialog | dialog |
+| `refreshSeconds` | int | `60` | While the picker is open, re-check which projects have tabs open every N seconds (min 5; `0` = off) | none |
+| `git` | string | `git` | git to use: a command on PATH, or the full path to `git.exe` (portable installs) | all git calls |
+| `ide` | string | `code` | Command the **IDE** button runs (VS Code by default; e.g. `cursor`, or a full path) | button |
+| `ideArgs` | string | `-n` | Arguments before the folder (`-n` = new window per project) | button |
+| `claudeArgs` | string | `""` | Extra `claude` arguments (no double quotes) | preset |
+
+## `presets.json`
+
+See [`presets.example.json`](../presets.example.json). An array of objects matched to projects by folder `name`; every other key is optional.
+
+| Key | Type | Meaning |
+|---|---|---|
+| `name` | string | Project folder name (required) |
+| `extraTabs` | `{title, path}[]` | Additional shell tabs in other folders |
+| `launch` | `{exe, args[]}[]` | Extra apps started with the project |
+| `claudeArgs` | string | Replaces the global `claudeArgs` for this project |
+| `shell`, `diff` | bool | Override the global setting for this project |
+| `tabColor` | `#RRGGBB` | Fixed tab color |
