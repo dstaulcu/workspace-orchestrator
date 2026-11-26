@@ -57,7 +57,7 @@ param(
 )
 
 # ---------------------------------------------------------------- config / state
-$AppVersion = '1.1.2'   # bump on every release; the update check compares it with the latest GitHub release tag
+$AppVersion = '1.2.0'   # bump on every release; the update check compares it with the latest GitHub release tag
 $cfg = @{
     root = 'C:\code'; top = 0; ignore = @()
     noiseDirs = @('.git','node_modules','.venv','venv','__pycache__','dist','build','.next','bin','obj','.idea','.vscode')
@@ -1075,12 +1075,15 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
     $lbl = New-Object System.Windows.Forms.Label
     $lbl.Text = 'Filter:'; $lbl.Location = New-Object System.Drawing.Point(12, 16); $lbl.AutoSize = $true
     $btnNew = New-Object System.Windows.Forms.Button
-    $btnNew.Text = '+ New project'; $btnNew.Location = New-Object System.Drawing.Point(308, 10); $btnNew.Size = New-Object System.Drawing.Size(90, 26)
+    $btnNew.Text = '+ New project'; $btnNew.Location = New-Object System.Drawing.Point(440, 10); $btnNew.Size = New-Object System.Drawing.Size(90, 26)
     $filterBox = New-Object System.Windows.Forms.TextBox
     $filterBox.Location = New-Object System.Drawing.Point(60, 12); $filterBox.Width = 240; $filterBox.Text = $InitialFilter
+    $stateBox = New-Object System.Windows.Forms.ComboBox
+    $stateBox.DropDownStyle = 'DropDownList'; $stateBox.Location = New-Object System.Drawing.Point(308, 12); $stateBox.Width = 124
+    [void]$stateBox.Items.AddRange(@('All projects', 'Dirty (uncommitted)', 'Clean', 'Open in terminal', 'Not open', 'Not a git repo')); $stateBox.SelectedIndex = 0
     $hint = New-Object System.Windows.Forms.Label
     $hint.Text = 'Check projects and Launch, or highlight an open (green) project and Switch to bring it forward.'
-    $hint.Location = New-Object System.Drawing.Point(414, 16); $hint.AutoSize = $true
+    $hint.Location = New-Object System.Drawing.Point(546, 16); $hint.AutoSize = $true
 
     $lv = New-Object System.Windows.Forms.ListView
     $lv.View = 'Details'; $lv.CheckBoxes = $true; $lv.FullRowSelect = $true; $lv.GridLines = $true; $lv.HideSelection = $false
@@ -1241,12 +1244,13 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
     $btnClose   = New-Btn 'Close' 1040
     $btnClose.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
     $form.AcceptButton = $btnGo; $form.CancelButton = $btnClose
-    $form.Controls.AddRange(@($lbl, $filterBox, $btnNew, $hint, $updLink, $lv, $status, $help, $btnSettings, $btnIde, $btnGit, $btnArrange, $btnRefresh, $btnSwitch, $btnGo, $btnClose))
+    $form.Controls.AddRange(@($lbl, $filterBox, $stateBox, $btnNew, $hint, $updLink, $lv, $status, $help, $btnSettings, $btnIde, $btnGit, $btnArrange, $btnRefresh, $btnSwitch, $btnGo, $btnClose))
 
     $ctrlTip = New-Object System.Windows.Forms.ToolTip
     $ctrlTip.InitialDelay = 400; $ctrlTip.AutoPopDelay = 12000
     $ctrlTip.SetToolTip($btnNew, 'Create a new project folder in your projects folder: optionally run git init, add a README and open it in your IDE. The list reloads with it pre-checked.')
-    $ctrlTip.SetToolTip($filterBox, 'Type to narrow the list by project name or path. Checked projects stay checked while you filter.')
+    $ctrlTip.SetToolTip($filterBox, 'Type to narrow the list by project name, path or branch. Checked projects stay checked while you filter.')
+    $ctrlTip.SetToolTip($stateBox, 'Show only projects in a given state: dirty (uncommitted changes), clean, open in a terminal, not open, or not a git repo. Combines with the text filter. Click a column header to sort.')
     $ctrlTip.SetToolTip($btnSettings, 'Edit config.json (global defaults) or presets.json (per-project overrides) in your default editor (changes apply the next time the picker starts), or save the positions of your open project windows so Launch restores them.')
     $ctrlTip.SetToolTip($btnIde, 'Open the checked and the highlighted projects in your IDE, one new window per project. Visual Studio Code by default; set "ide" (and "ideArgs") in config.json to use another.')
     $ctrlTip.SetToolTip($btnGit, 'Git actions for the highlighted project: open its repository in your browser, initialize a local git repository, or create a new GitHub repository (in an organization you pick) and add it as origin. Also on the right-click menu of a row.')
@@ -1266,11 +1270,28 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
         $sel = @($lv.SelectedItems | ForEach-Object { [string]$_.Tag })
         $lv.BeginUpdate(); $lv.Items.Clear()
         $f = $filterBox.Text.Trim()
-        foreach ($r in $Rows) {
-            if ($f -and $r.Name.IndexOf($f, [StringComparison]::OrdinalIgnoreCase) -lt 0 -and $r.Path.IndexOf($f, [StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
+        $sf = $stateBox.SelectedIndex
+        $list = @($Rows)
+        if ($ctx.SortCol -ge 0) {
+            $key = switch ($ctx.SortCol) {
+                0 { { $_.Name } }
+                1 { { [bool]$ctx.Running.Contains($_.Name) } }
+                2 { { $_.LastActiveDt } }
+                3 { { $_.LastActiveDt } }
+                4 { { $_.Path } }
+                5 { { [string]$_.Branch } }
+                6 { { if ($_.Dirty -eq $true) { 0 } elseif ($_.Dirty -eq $false) { 1 } else { 2 } } }
+                default { { [string]$_.RemoteUrl } }
+            }
+            $list = @($list | Sort-Object -Property $key -Descending:([bool]$ctx.SortDesc))
+        }
+        foreach ($r in $list) {
+            if ($f -and $r.Name.IndexOf($f, [StringComparison]::OrdinalIgnoreCase) -lt 0 -and $r.Path.IndexOf($f, [StringComparison]::OrdinalIgnoreCase) -lt 0 -and ([string]$r.Branch).IndexOf($f, [StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
+            $isOpen = $ctx.Running.Contains($r.Name)
+            $keep = switch ($sf) { 1 { $r.Dirty -eq $true } 2 { $r.Dirty -eq $false } 3 { $isOpen } 4 { -not $isOpen } 5 { -not $r.IsGit } default { $true } }
+            if (-not $keep) { continue }
             $it = New-Object System.Windows.Forms.ListViewItem($r.Name)
             $open = ''
-            $isOpen = $ctx.Running.Contains($r.Name)
             if ($isOpen) { $open = [string][char]0x25CF }
             $st = ''
             if ($r.Dirty -eq $true) { $st = 'dirty' } elseif ($r.Dirty -eq $false) { $st = 'clean' }
@@ -1340,6 +1361,20 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
         if ($e.Item.Checked) { [void]$ctx.Checked.Add([string]$e.Item.Tag) } else { [void]$ctx.Checked.Remove([string]$e.Item.Tag) }
     }.GetNewClosure())
     $filterBox.Add_TextChanged({ & $fill }.GetNewClosure())
+    $stateBox.Add_SelectedIndexChanged({ & $fill; $status.Text = '{0} of {1} project(s) shown.' -f $lv.Items.Count, @($Rows).Count }.GetNewClosure())
+    # Click a column header to sort by it; click again to reverse. Dates, Open and State start with the most useful end first.
+    $ctx.SortCol = -1; $ctx.SortDesc = $false
+    $colNames = @($lv.Columns | ForEach-Object { $_.Text })
+    $lv.Add_ColumnClick({
+        param($s, $e)
+        $c = [int]$e.Column
+        if ($ctx.SortCol -eq $c) { $ctx.SortDesc = -not $ctx.SortDesc } else { $ctx.SortCol = $c; $ctx.SortDesc = ($c -in 1, 2, 3) }
+        for ($i = 0; $i -lt $lv.Columns.Count; $i++) {
+            $mark = ''; if ($i -eq $c) { $mark = $(if ($ctx.SortDesc) { ' ' + [char]0x25BC } else { ' ' + [char]0x25B2 }) }
+            $lv.Columns[$i].Text = $colNames[$i] + $mark
+        }
+        & $fill
+    }.GetNewClosure())
     # Refresh: re-check open tabs right away, then re-read git state (branch, dirty, remote) and last-active time in the
     # background so the window stays responsive. A timer polls the background job and applies the result.
     $factsTimer = New-Object System.Windows.Forms.Timer

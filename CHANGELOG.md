@@ -4,6 +4,12 @@ All notable changes to Workspace Wrangler. Newest first. The picker opens this f
 and offers it after an update. Add new entries under **Unreleased** as you work; rename that heading to the
 version when you release.
 
+## 1.2.0 - 2026-11-26
+
+### Added
+- **State filter** dropdown beside the filter box: show only dirty (uncommitted), clean, open, not-open or non-git projects. It combines with the text filter, which now also matches the branch.
+- **Click a column header to sort** the list (click again to reverse); the header shows the direction.
+
 ## 1.1.2 - 2026-11-26
 
 ### Fixed

@@ -30,7 +30,7 @@ To try it without installing: `powershell.exe -NoProfile -ExecutionPolicy Bypass
 
 ## Using the picker
 
-Check projects and press **Launch** (or Enter). Type in the filter box to narrow the list.
+Check projects and press **Launch** (or Enter). Type in the filter box to narrow the list by name, path or branch, use the dropdown beside it to show only dirty, clean, open, not-open or non-git projects, and click a column header to sort.
 
 | Button | What it does |
 |---|---|
