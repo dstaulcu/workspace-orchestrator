@@ -57,7 +57,7 @@ param(
 )
 
 # ---------------------------------------------------------------- config / state
-$AppVersion = '1.2.1'   # bump on every release; the update check compares it with the latest GitHub release tag
+$AppVersion = '1.2.2'   # bump on every release; the update check compares it with the latest GitHub release tag
 $cfg = @{
     root = 'C:\code'; top = 0; ignore = @()
     noiseDirs = @('.git','node_modules','.venv','venv','__pycache__','dist','build','.next','bin','obj','.idea','.vscode')
@@ -1926,23 +1926,26 @@ function Show-RenameDialog($OwnerForm, $Row) {
     $parent = Split-Path -Parent $Row.Path
     $old = $Row.Name
     $dlg = New-Object System.Windows.Forms.Form
-    $dlg.Text = "Rename $old"; $dlg.ClientSize = New-Object System.Drawing.Size(470, 348)
+    $dlg.Text = "Rename $old"; $dlg.ClientSize = New-Object System.Drawing.Size(470, 366)
     $dlg.FormBorderStyle = 'FixedDialog'; $dlg.MaximizeBox = $false; $dlg.MinimizeBox = $false; $dlg.StartPosition = 'CenterParent'
     $l1 = New-Object System.Windows.Forms.Label; $l1.Text = 'New name:'; $l1.AutoSize = $true; $l1.Location = New-Object System.Drawing.Point(12, 16)
     $txt = New-Object System.Windows.Forms.TextBox; $txt.Location = New-Object System.Drawing.Point(90, 12); $txt.Width = 370; $txt.Text = $old
-    $err = New-Object System.Windows.Forms.Label; $err.ForeColor = [System.Drawing.Color]::Firebrick; $err.Location = New-Object System.Drawing.Point(12, 40); $err.Size = New-Object System.Drawing.Size(448, 20)
-    $info = New-Object System.Windows.Forms.Label; $info.Location = New-Object System.Drawing.Point(12, 66); $info.Size = New-Object System.Drawing.Size(448, 112)
+    $naming = New-Object System.Windows.Forms.Label; $naming.Location = New-Object System.Drawing.Point(90, 38); $naming.Size = New-Object System.Drawing.Size(370, 18)
+    $naming.ForeColor = [System.Drawing.SystemColors]::GrayText
+    $naming.Text = "Tip: a noun-verb name reads well, e.g. page-distill or log-triage."
+    $err = New-Object System.Windows.Forms.Label; $err.ForeColor = [System.Drawing.Color]::Firebrick; $err.Location = New-Object System.Drawing.Point(12, 58); $err.Size = New-Object System.Drawing.Size(448, 20)
+    $info = New-Object System.Windows.Forms.Label; $info.Location = New-Object System.Drawing.Point(12, 84); $info.Size = New-Object System.Drawing.Size(448, 112)
     $info.Text = "The folder is renamed in place ($parent).`n`nAlso updated so nothing is lost: its Claude conversation history (so --continue keeps working), its entry in presets.json, its saved window position and the remembered selection.`n`nClose its terminal tabs and IDE window first."
-    $chk = New-Object System.Windows.Forms.CheckBox; $chk.Text = 'Tell Claude about the rename the next time I launch this project'; $chk.Checked = $true; $chk.AutoSize = $true; $chk.Location = New-Object System.Drawing.Point(12, 184)
-    $note = New-Object System.Windows.Forms.TextBox; $note.Multiline = $true; $note.ScrollBars = 'Vertical'; $note.Location = New-Object System.Drawing.Point(12, 210); $note.Size = New-Object System.Drawing.Size(448, 82)
-    $ok = New-Object System.Windows.Forms.Button; $ok.Text = 'Rename'; $ok.Location = New-Object System.Drawing.Point(274, 308); $ok.Size = New-Object System.Drawing.Size(90, 28)
-    $cancel = New-Object System.Windows.Forms.Button; $cancel.Text = 'Cancel'; $cancel.Location = New-Object System.Drawing.Point(374, 308); $cancel.Size = New-Object System.Drawing.Size(90, 28)
+    $chk = New-Object System.Windows.Forms.CheckBox; $chk.Text = 'Tell Claude about the rename the next time I launch this project'; $chk.Checked = $true; $chk.AutoSize = $true; $chk.Location = New-Object System.Drawing.Point(12, 202)
+    $note = New-Object System.Windows.Forms.TextBox; $note.Multiline = $true; $note.ScrollBars = 'Vertical'; $note.Location = New-Object System.Drawing.Point(12, 228); $note.Size = New-Object System.Drawing.Size(448, 82)
+    $ok = New-Object System.Windows.Forms.Button; $ok.Text = 'Rename'; $ok.Location = New-Object System.Drawing.Point(274, 326); $ok.Size = New-Object System.Drawing.Size(90, 28)
+    $cancel = New-Object System.Windows.Forms.Button; $cancel.Text = 'Cancel'; $cancel.Location = New-Object System.Drawing.Point(374, 326); $cancel.Size = New-Object System.Drawing.Size(90, 28)
     $cancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
     $ok.DialogResult = [System.Windows.Forms.DialogResult]::OK
     $dlg.AcceptButton = $ok; $dlg.CancelButton = $cancel
-    $dlg.Controls.AddRange(@($l1, $txt, $err, $info, $chk, $note, $ok, $cancel))
+    $dlg.Controls.AddRange(@($l1, $txt, $naming, $err, $info, $chk, $note, $ok, $cancel))
     $tip = New-Object System.Windows.Forms.ToolTip
-    $tip.SetToolTip($txt, 'The new folder name.')
+    $tip.SetToolTip($txt, 'The new folder name. A noun-verb name such as page-distill is suggested, not required.')
     $tip.SetToolTip($chk, 'Claude cannot know the folder was renamed. When ticked, this message is sent as the first message of the next Claude session you launch for the project (once), so it can fix references to the old name or path.')
     $tip.SetToolTip($note, 'Edit the message if you like. It is sent to Claude as your first message on the next launch of this project.')
     $tip.SetToolTip($ok, 'Rename the folder and carry its Claude history, preset and window position along.')

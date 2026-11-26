@@ -4,6 +4,11 @@ All notable changes to Workspace Wrangler. Newest first. The picker opens this f
 and offers it after an update. Add new entries under **Unreleased** as you work; rename that heading to the
 version when you release.
 
+## 1.2.2 - 2026-11-26
+
+### Changed
+- The **Rename project** dialog shows the same noun-verb naming tip as New project.
+
 ## 1.2.1 - 2026-11-26
 
 ### Changed
