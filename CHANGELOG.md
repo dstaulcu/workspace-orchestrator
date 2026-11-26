@@ -4,6 +4,12 @@ All notable changes to Workspace Wrangler. Newest first. The picker opens this f
 and offers it after an update. Add new entries under **Unreleased** as you work; rename that heading to the
 version when you release.
 
+## 1.1.2 - 2026-11-26
+
+### Fixed
+- **Refresh** no longer freezes the window: the git re-read runs in the background, the button is disabled while it works, and the list is re-sorted by the new activity times.
+- Refresh no longer blanks the git columns when git info is off, and reports an error instead of claiming success when the check fails.
+
 ## 1.1.1 - 2026-11-25
 
 ### Changed

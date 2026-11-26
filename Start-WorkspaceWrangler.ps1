@@ -57,7 +57,7 @@ param(
 )
 
 # ---------------------------------------------------------------- config / state
-$AppVersion = '1.1.1'   # bump on every release; the update check compares it with the latest GitHub release tag
+$AppVersion = '1.1.2'   # bump on every release; the update check compares it with the latest GitHub release tag
 $cfg = @{
     root = 'C:\code'; top = 0; ignore = @()
     noiseDirs = @('.git','node_modules','.venv','venv','__pycache__','dist','build','.next','bin','obj','.idea','.vscode')
@@ -1047,7 +1047,7 @@ function New-TabClause([string]$Title, [string]$Dir, [string]$Command, [string]$
 # list of open projects comes from $GetRunning (all scriptblocks defined in the main script,
 # because WinForms handlers are closures that can't see script-scope state or functions).
 function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
-                          [scriptblock]$OnLaunch, [scriptblock]$OnSwitch, [scriptblock]$GetRunning, [int]$RefreshSeconds = 0, [scriptblock]$OnSaveLayout, [scriptblock]$OnArrange, [scriptblock]$OnGitOp, [hashtable]$Update, [scriptblock]$OnIde, [scriptblock]$OnCascade, [hashtable]$Actions, [scriptblock]$OnRefreshFacts) {
+                          [scriptblock]$OnLaunch, [scriptblock]$OnSwitch, [scriptblock]$GetRunning, [int]$RefreshSeconds = 0, [scriptblock]$OnSaveLayout, [scriptblock]$OnArrange, [scriptblock]$OnGitOp, [hashtable]$Update, [scriptblock]$OnIde, [scriptblock]$OnCascade, [hashtable]$Actions, [scriptblock]$OnFactsStart, [scriptblock]$OnFactsDone) {
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
     [System.Windows.Forms.Application]::EnableVisualStyles()
@@ -1340,18 +1340,36 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
         if ($e.Item.Checked) { [void]$ctx.Checked.Add([string]$e.Item.Tag) } else { [void]$ctx.Checked.Remove([string]$e.Item.Tag) }
     }.GetNewClosure())
     $filterBox.Add_TextChanged({ & $fill }.GetNewClosure())
-    # The Refresh button also re-reads git state (branch, dirty, remote) and last-active time; the cheap tab-only refresh above
-    # still runs on its own when the window is reactivated and on the background timer.
-    $btnRefresh.Add_Click({
-        if ($OnRefreshFacts) {
-            $status.Text = 'Refreshing git state...'; $form.Update()
-            try {
-                & $OnRefreshFacts
-                foreach ($r in $Rows) { if ($r.RemoteUrl) { $ctx.Remote[$r.Path] = $r.RemoteUrl } else { $ctx.Remote.Remove($r.Path) } }
-            } catch { }
-        }
-        & $refresh
+    # Refresh: re-check open tabs right away, then re-read git state (branch, dirty, remote) and last-active time in the
+    # background so the window stays responsive. A timer polls the background job and applies the result.
+    $factsTimer = New-Object System.Windows.Forms.Timer
+    $factsTimer.Interval = 300
+    $factsTimer.Add_Tick({
+        $t = $ctx.FactsTask
+        if (-not $t) { $factsTimer.Stop(); return }
+        if (-not $t.Handle.IsCompleted) { return }
+        $factsTimer.Stop(); $ctx.FactsTask = $null; $btnRefresh.Enabled = $true
+        $err = ''
+        try { [void](& $OnFactsDone $t) } catch { $err = $_.Exception.Message }
+        if ($err) { $status.Text = "Could not refresh git state: $err"; return }
+        # Keep newest-activity-first order (sorted in place so every closure still sees the same array).
+        $sorted = @($Rows | Sort-Object LastActiveDt -Descending)
+        for ($i = 0; $i -lt $sorted.Count; $i++) { $Rows[$i] = $sorted[$i] }
+        foreach ($r in $Rows) { if ($r.RemoteUrl) { $ctx.Remote[$r.Path] = $r.RemoteUrl } else { [void]$ctx.Remote.Remove($r.Path) } }
+        & $fill
         $status.Text = '{0} open project(s); git state refreshed.' -f $ctx.Running.Count
+    }.GetNewClosure())
+    $btnRefresh.Add_Click({
+        & $refresh
+        if ($ctx.FactsTask) { return }
+        $task = $null
+        try { if ($OnFactsStart) { $task = & $OnFactsStart } } catch { $status.Text = "Could not refresh git state: $($_.Exception.Message)"; return }
+        if ($task) {
+            $ctx.FactsTask = $task; $btnRefresh.Enabled = $false
+            $status.Text = 'Refreshing git state...'; $factsTimer.Start()
+        } else {
+            $status.Text = '{0} open project(s) found. Git info is off (gitInfo in config.json), so only open tabs were refreshed.' -f $ctx.Running.Count
+        }
     }.GetNewClosure())
     # Arrange: pick a style from a menu. Shift while choosing = ignore saved spots.
     $arrMenu = New-Object System.Windows.Forms.ContextMenuStrip
@@ -2330,20 +2348,30 @@ if ($All) {
     $onCascade = { param($self) Invoke-CascadeFront ([int64]$self) }
     $actions = @{ LaunchOptions = { param($row, $owner) Invoke-PickerLaunchOptions $row $owner }; NewProject = { param($owner) Invoke-PickerNewProject $owner }; RenameProject = { param($row, $owner) Invoke-PickerRenameProject $row $owner }; ChooseRoot = { $p = Show-RootDialog @(Find-ProjectRootCandidates) "Current projects folder: $Root"; if ($p) { Set-ConfigValue 'root' $p }; $p } }
     $onIde = { param($paths) Invoke-OpenIde ([string[]]$paths) }
-    # Re-read git info and last-active for the listed rows, updating the row objects in place (the folder list itself is not rescanned).
-    $onRefreshFacts = {
-        $ds = @($rows | ForEach-Object { Get-Item -LiteralPath $_.Path -ErrorAction SilentlyContinue } | Where-Object { $_ })
-        $f = Get-ProjectFacts $ds $true $needGit
+    # Refresh support: start Get-ProjectFacts for every listed row in a background runspace (returns $null when git info is off),
+    # then apply the finished result to the row objects in place. The folder list itself is not rescanned.
+    $onFactsStart = {
+        if (-not $needGit) { return $null }
+        $fns = 'ConvertTo-RemoteWebUrl', 'Get-GitInfo', 'Get-LastActive', 'Get-ProjectFacts'
+        $defs = ($fns | ForEach-Object { "function $_ {`n" + (Get-Item "function:$_").ScriptBlock.ToString() + "`n}" }) -join "`n"
+        $body = 'param($paths, $noise, $maxFiles, $maxDepth)' + "`n" + '$NoiseDirs = $noise; $MaxScanFiles = $maxFiles; $MaxScanDepth = $maxDepth' + "`n" + $defs + "`n" +
+            '$d = @($paths | ForEach-Object { [pscustomobject]@{ FullName = $_ } }); Get-ProjectFacts $d $true $true'
+        $ps = [powershell]::Create()
+        [void]$ps.AddScript($body).AddArgument([string[]]@($rows | ForEach-Object { $_.Path })).AddArgument($NoiseDirs).AddArgument($MaxScanFiles).AddArgument($MaxScanDepth)
+        @{ PS = $ps; Handle = $ps.BeginInvoke() }
+    }
+    $onFactsDone = {
+        param($task)
+        try { $out = @($task.PS.EndInvoke($task.Handle)) } finally { $task.PS.Dispose() }
+        if (-not $out.Count -or $out[-1] -isnot [hashtable]) { throw 'the background check returned nothing' }
+        $f = $out[-1]
         foreach ($r in $rows) {
             if (-not $f.ContainsKey($r.Path)) { continue }
             $la = $f[$r.Path].La; $gi = $f[$r.Path].Gi
-            $r.LastActiveDt = $la
-            $r.Relative = $(if ($la) { Format-Relative $la } else { '' })
-            $r.LastActive = $(if ($la) { $la.ToString('yyyy-MM-dd HH:mm') } else { '' })
+            if ($la) { $r.LastActiveDt = $la; $r.Relative = Format-Relative $la; $r.LastActive = $la.ToString('yyyy-MM-dd HH:mm') }
+            if ($gi) { $r.RemoteUrl = $gi.RemoteUrl; $r.Branch = $gi.Branch; $r.Dirty = $gi.Dirty }   # keep old values if a check failed
             $r.IsGit = Test-Path -LiteralPath (Join-Path $r.Path '.git')
-            $r.RemoteUrl = $(if ($gi) { $gi.RemoteUrl } else { $null })
-            $r.Branch = $(if ($gi) { $gi.Branch } else { $null })
-            $r.Dirty = $(if ($gi) { $gi.Dirty } else { $null })
+            if (-not $r.IsGit) { $r.Branch = $null; $r.Dirty = $null; $r.RemoteUrl = $null }
             $r.HasHistory = Test-ClaudeHistory $r.Path
             $r.HasPreset = [bool](Get-Preset $r.Name)
         }
@@ -2358,6 +2386,6 @@ if ($All) {
         Restart = { Restart-Wrangler }
         Changelog = { Open-Changelog }
     }
-    [void](Show-FormsPicker $rows $Filter @($state.last) $onLaunch $onSwitch $getRunning ([int]$cfg.refreshSeconds) $onSaveLayout $onArrange $onGitOp $update $onIde $onCascade $actions $onRefreshFacts)
+    [void](Show-FormsPicker $rows $Filter @($state.last) $onLaunch $onSwitch $getRunning ([int]$cfg.refreshSeconds) $onSaveLayout $onArrange $onGitOp $update $onIde $onCascade $actions $onFactsStart $onFactsDone)
     if (-not $DryRun) { Save-State }
 }
