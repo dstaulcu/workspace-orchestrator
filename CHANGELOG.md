@@ -4,6 +4,12 @@ All notable changes to Workspace Wrangler. Newest first. The picker opens this f
 and offers it after an update. Add new entries under **Unreleased** as you work; rename that heading to the
 version when you release.
 
+## 1.3.1 - 2026-11-26
+
+### Fixed
+- **First run now always asks where your projects are.** Previously the dialog only appeared if the default `C:\code` was missing or empty, so a fresh install on a machine that has `C:\code` silently used it. Now, when there is no `config.json` and no `state.json` (new install, or settings removed), the picker shows the folder dialog first, with the likely folders pre-listed. Existing installs are not asked again; cancelling the dialog asks again next time.
+- **The folder dialog no longer scans anything on its own.** It explains what suggesting folders would read (the project list in Claude Code's `~\.claude.json`, VS Code's recent-folders list, and whether common folders like `code` or `src` exist; folder names only, nothing changed, saved or sent) and only does it when you click **Look for likely folders**; **Browse...** works without it. The dialog also shows the app's hat icon instead of the concept art, which looked poor at that size.
+
 ## 1.3.0 - 2026-11-26
 
 ### Changed
