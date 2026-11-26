@@ -37,7 +37,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Root,
+    [string[]]$Root,
     [int]$Top,
     [string]$Filter,
     [string[]]$Project,
@@ -57,9 +57,9 @@ param(
 )
 
 # ---------------------------------------------------------------- config / state
-$AppVersion = '1.3.1'   # bump on every release; the update check compares it with the latest GitHub release tag
+$AppVersion = '1.4.0'   # bump on every release; the update check compares it with the latest GitHub release tag
 $cfg = @{
-    root = 'C:\code'; top = 0; ignore = @()
+    root = 'C:\code'; roots = @(); projects = @(); top = 0; ignore = @()
     noiseDirs = @('.git','node_modules','.venv','venv','__pycache__','dist','build','.next','bin','obj','.idea','.vscode')
     maxScanFiles = 5000; maxScanDepth = 6; picker = 'Forms'
     shell = $true; diff = $true; tabColors = $true; gitInfo = $true; claudeArgs = ''; refreshSeconds = 60; arrangeOnLaunch = $true; arrangeStyle = 'cascade'; keepDesktopIconsClear = $true; windowWidth = 1100; windowHeight = 750; restoreLayouts = $true
@@ -107,7 +107,15 @@ if ([string]$cfg.git -and [string]$cfg.git -ne 'git') {
     elseif (Test-Path -LiteralPath $gitExe -PathType Container) { $env:PATH = $gitExe + ';' + $env:PATH }
     else { Write-Warning "config.json: git path not found: $gitExe (using git from PATH)" }
 }
-if (-not $PSBoundParameters.ContainsKey('Root'))   { $Root = $cfg.root }
+# Project folders: -Root a,b wins; else config "roots" (a list); else the single legacy "root". "projects" lists individual folders that are
+# projects themselves (not parents of projects).
+if ($PSBoundParameters.ContainsKey('Root')) { $Roots = @($Root | Where-Object { $_ }) }
+else {
+    $Roots = @($cfg.roots | Where-Object { $_ } | ForEach-Object { [string]$_ })
+    if (-not $Roots.Count -and $cfg.root) { $Roots = @([string]$cfg.root) }
+}
+$ExtraProjects = @($cfg.projects | Where-Object { $_ } | ForEach-Object { [string]$_ })
+if ($PSBoundParameters.ContainsKey('Root')) { $ExtraProjects = @() }   # -Root means exactly these folders
 if (-not $PSBoundParameters.ContainsKey('Top'))    { $Top = [int]$cfg.top }
 if (-not $PSBoundParameters.ContainsKey('Ignore')) { $Ignore = @($cfg.ignore) }
 if (-not $PSBoundParameters.ContainsKey('Picker')) { $Picker = $cfg.picker }
@@ -1732,7 +1740,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
     $miPre = $menu.Items.Add('Edit presets.json (per-project overrides)')
     $miLay = $menu.Items.Add('Save window layout (remember where open projects are)')
     $miUpd = $menu.Items.Add('Check for updates now')
-    $miRoot = $menu.Items.Add('Change projects folder...')
+    $miRoot = $menu.Items.Add('Projects folders...')
     $miLog = $menu.Items.Add('Changelog (what changed in each version)')
     $miAbout = $menu.Items.Add('About Workspace Wrangler...')
     $miAbout.ToolTipText = 'Version, links and the full concept art.'
@@ -1755,7 +1763,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
         } catch { $status.Text = "Could not open presets.json: $_" }
     }.GetNewClosure())
     $btnNew.Add_Click({ & $actNewProject }.GetNewClosure())
-    $miRoot.ToolTipText = 'Choose which folder holds your projects (each subfolder is a project). Saved as "root" in config.json; the picker restarts.'
+    $miRoot.ToolTipText = 'Choose which folders hold your projects (each subfolder is a project; you can use several). Saved as "roots" in config.json; the picker restarts.'
     $miRoot.Add_Click({
         $p = & $Actions.ChooseRoot
         if ($p) { & $Update.Restart; $form.Close() }
@@ -1982,7 +1990,8 @@ function Test-ProjectName([string]$Name, [string]$ParentDir, [string]$Current = 
 }
 
 # Dialog: name for a new project (+ git init / README / open in IDE). Returns $null or { Name, GitInit, Readme, OpenIde }.
-function Show-NewProjectDialog($OwnerForm, [string]$ParentDir) {
+function Show-NewProjectDialog($OwnerForm, [string[]]$Parents) {
+    $ParentDir = [string]@($Parents)[0]
     $dlg = New-Object System.Windows.Forms.Form
     $dlg.Text = 'New project'; $dlg.ClientSize = New-Object System.Drawing.Size(470, 262)
     $dlg.FormBorderStyle = 'FixedDialog'; $dlg.MaximizeBox = $false; $dlg.MinimizeBox = $false; $dlg.StartPosition = 'CenterParent'
@@ -2014,10 +2023,24 @@ function Show-NewProjectDialog($OwnerForm, [string]$ParentDir) {
     $tip.SetToolTip($chkIde, 'Open the new folder in your IDE (config "ide") right after creating it.')
     $tip.SetToolTip($ok, 'Create the folder in your projects folder and add it to the list.')
     $tip.SetToolTip($cancel, 'Close without creating anything.')
-    $upd = { $e = Test-ProjectName $txt.Text $ParentDir; $err.Text = $(if ($txt.Text.Trim()) { [string]$e } else { '' }); $where.Text = "Will be created at: $(Join-Path $ParentDir $txt.Text.Trim())"; $ok.Enabled = ($txt.Text.Trim() -and -not $e) }.GetNewClosure()
-    $txt.Add_TextChanged($upd); & $upd
+    # With several project folders, let the user pick which one the new project goes in (the dialog grows to make room).
+    $cur = @{ Parent = $ParentDir }
+    if (@($Parents).Count -gt 1) {
+        $dlg.ClientSize = New-Object System.Drawing.Size(470, 292)
+        foreach ($c in @($where, $chkGit, $chkRead, $chkIde, $err, $ok, $cancel)) { $c.Top += 30 }
+        $inLbl = New-Object System.Windows.Forms.Label; $inLbl.Text = 'Create in:'; $inLbl.AutoSize = $true; $inLbl.Location = New-Object System.Drawing.Point(12, 80)
+        $parentBox = New-Object System.Windows.Forms.ComboBox; $parentBox.DropDownStyle = 'DropDownList'; $parentBox.Location = New-Object System.Drawing.Point(110, 76); $parentBox.Width = 350
+        foreach ($pp in @($Parents)) { [void]$parentBox.Items.Add([string]$pp) }
+        $parentBox.SelectedIndex = 0
+        $dlg.Controls.AddRange(@($inLbl, $parentBox))
+        $tip.SetToolTip($parentBox, 'Which of your project folders the new project is created in.')
+    }
+    $upd = { $e = Test-ProjectName $txt.Text $cur.Parent; $err.Text = $(if ($txt.Text.Trim()) { [string]$e } else { '' }); $where.Text = "Will be created at: $(Join-Path $cur.Parent $txt.Text.Trim())"; $ok.Enabled = ($txt.Text.Trim() -and -not $e) }.GetNewClosure()
+    $txt.Add_TextChanged($upd)
+    if ($parentBox) { $parentBox.Add_SelectedIndexChanged({ $cur.Parent = [string]$parentBox.SelectedItem; & $upd }.GetNewClosure()) }
+    & $upd
     $res = $dlg.ShowDialog($OwnerForm); $out = $null
-    if ($res -eq [System.Windows.Forms.DialogResult]::OK) { $out = [pscustomobject]@{ Name = $txt.Text.Trim(); GitInit = $chkGit.Checked; Readme = $chkRead.Checked; OpenIde = $chkIde.Checked } }
+    if ($res -eq [System.Windows.Forms.DialogResult]::OK) { $out = [pscustomobject]@{ Name = $txt.Text.Trim(); Parent = $cur.Parent; GitInit = $chkGit.Checked; Readme = $chkRead.Checked; OpenIde = $chkIde.Checked } }
     $dlg.Dispose(); $out
 }
 
@@ -2075,9 +2098,10 @@ function Show-RenameDialog($OwnerForm, $Row) {
 # Creates the folder (+ optional git init / README) under the projects root and remembers it as the selection. { Ok, Message, Path }.
 function Invoke-NewProject($Opts) {
     $r = [pscustomobject]@{ Ok = $false; Message = ''; Path = '' }
-    $err = Test-ProjectName $Opts.Name $Root
+    $parent = [string]$Opts.Parent; if (-not $parent) { $parent = [string]@($Roots)[0] }
+    $err = Test-ProjectName $Opts.Name $parent
     if ($err) { $r.Message = $err; return $r }
-    $path = Join-Path $Root $Opts.Name; $r.Path = $path
+    $path = Join-Path $parent $Opts.Name; $r.Path = $path
     if ($DryRun) { $r.Message = "Dry run: would create $path" + $(if ($Opts.GitInit) { ', run git init' } else { '' }) + $(if ($Opts.Readme) { ' and add README.md' } else { '' }) + '.'; return $r }
     try { New-Item -ItemType Directory -Path $path -ErrorAction Stop | Out-Null } catch { $r.Message = "Could not create the folder: $_"; return $r }
     $notes = @("Created $path")
@@ -2134,7 +2158,7 @@ function Invoke-RenameProject($Row, [string]$NewName, [string]$Note = '') {
 
 # Picker side: dialog, confirmation, action. Returns { Ok; Message } (Ok = the list needs a reload).
 function Invoke-PickerNewProject($OwnerForm) {
-    $opts = Show-NewProjectDialog $OwnerForm $Root
+    $opts = Show-NewProjectDialog $OwnerForm @($Roots | Where-Object { Test-Path -LiteralPath $_ -PathType Container })
     if (-not $opts) { return [pscustomobject]@{ Ok = $false; Message = 'Cancelled.' } }
     Invoke-NewProject $opts
 }
@@ -2347,9 +2371,18 @@ function Set-ConfigValue([string]$Key, $Value) {
     } catch { Write-Warning "Could not save $Key to config.json: $_" }
 }
 
-# "Where are your projects?" dialog. Returns the chosen folder or $null. Nothing is scanned unless the user asks:
-# $Scan is a scriptblock returning candidate folders, run only when "Look for likely folders" is clicked.
-function Show-RootDialog([scriptblock]$Scan, [string]$Message) {
+# Writes the chosen project folders to config.json: "roots" (the list) and "root" (the first, so older versions still work).
+function Set-ProjectRoots([string[]]$Paths) {
+    $Paths = @($Paths | Where-Object { $_ })
+    if (-not $Paths.Count) { return }
+    Set-ConfigValue 'root' $Paths[0]
+    Set-ConfigValue 'roots' $Paths
+}
+
+# "Where are your projects?" dialog. Returns the checked folders (an array; empty on Cancel). Several folders can be used at once.
+# Nothing is scanned unless the user asks: $Scan is a scriptblock returning candidate folders, run only when "Look for likely folders"
+# is clicked. $Current are the folders already in use (listed and checked first).
+function Show-RootDialog([scriptblock]$Scan, [string]$Message, [string[]]$Current = @()) {
     Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing
     $dlg = New-Object System.Windows.Forms.Form
     $dlg.Text = 'Workspace Wrangler: where are your projects?'; $dlg.ClientSize = New-Object System.Drawing.Size(560, 392)
@@ -2358,19 +2391,20 @@ function Show-RootDialog([scriptblock]$Scan, [string]$Message) {
     $lbl.Location = New-Object System.Drawing.Point(12, 10); $lbl.Size = New-Object System.Drawing.Size(470, 64)
     $logo = Get-ArtImage 'app.png'
     if ($logo) { $pm = New-Object System.Windows.Forms.PictureBox; $pm.Image = $logo; $pm.SizeMode = 'Zoom'; $pm.Location = New-Object System.Drawing.Point(490, 8); $pm.Size = New-Object System.Drawing.Size(58, 58); $dlg.Controls.Add($pm) }
-    $lbl.Text = "$Message`n`nWorkspace Wrangler lists the subfolders of one folder as your projects. Choose the folder that contains your project folders."
+    $lbl.Text = "$Message`n`nWorkspace Wrangler lists the subfolders of each folder you check as your projects. Check one or more folders."
     $how = New-Object System.Windows.Forms.Label
     $how.Location = New-Object System.Drawing.Point(12, 80); $how.Size = New-Object System.Drawing.Size(536, 112)
     $how.ForeColor = [System.Drawing.SystemColors]::GrayText
-    $how.Text = "Browse to the folder yourself, or let Workspace Wrangler suggest folders. Suggesting is optional and only happens if you click the button. It reads, on this computer only:`n  - the project list in Claude Code's settings file (~\.claude.json)`n  - the recent-folders list kept by VS Code (also Insiders, VSCodium, Cursor, Windsurf)`n  - whether folders named code, repos, src, dev, projects or git exist`nIt only looks at folder names; nothing is changed, saved or sent anywhere."
-    $lst = New-Object System.Windows.Forms.ListBox
+    $how.Text = "Browse to folders yourself, or let Workspace Wrangler suggest some. Suggesting is optional and only happens if you click the button. It reads, on this computer only:`n  - the project list in Claude Code's settings file (~\.claude.json)`n  - the recent-folders list kept by VS Code (also Insiders, VSCodium, Cursor, Windsurf)`n  - whether folders named code, repos, src, dev, projects or git exist`nIt only looks at folder names; nothing is changed, saved or sent anywhere."
+    $lst = New-Object System.Windows.Forms.CheckedListBox
+    $lst.CheckOnClick = $true; $lst.HorizontalScrollbar = $true
     $lst.Location = New-Object System.Drawing.Point(12, 200); $lst.Size = New-Object System.Drawing.Size(536, 110)
     $status = New-Object System.Windows.Forms.Label
     $status.Location = New-Object System.Drawing.Point(12, 316); $status.Size = New-Object System.Drawing.Size(536, 18)
     $paths = New-Object System.Collections.ArrayList
     $look = New-Object System.Windows.Forms.Button; $look.Text = 'Look for likely folders'; $look.Location = New-Object System.Drawing.Point(12, 350); $look.Size = New-Object System.Drawing.Size(150, 28)
     $browse = New-Object System.Windows.Forms.Button; $browse.Text = 'Browse...'; $browse.Location = New-Object System.Drawing.Point(172, 350); $browse.Size = New-Object System.Drawing.Size(100, 28)
-    $ok = New-Object System.Windows.Forms.Button; $ok.Text = 'Use this folder'; $ok.Location = New-Object System.Drawing.Point(318, 350); $ok.Size = New-Object System.Drawing.Size(130, 28)
+    $ok = New-Object System.Windows.Forms.Button; $ok.Text = 'Use checked folders'; $ok.Location = New-Object System.Drawing.Point(298, 350); $ok.Size = New-Object System.Drawing.Size(150, 28)
     $cancel = New-Object System.Windows.Forms.Button; $cancel.Text = 'Cancel'; $cancel.Location = New-Object System.Drawing.Point(458, 350); $cancel.Size = New-Object System.Drawing.Size(90, 28)
     $cancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
     $ok.DialogResult = [System.Windows.Forms.DialogResult]::OK
@@ -2379,57 +2413,90 @@ function Show-RootDialog([scriptblock]$Scan, [string]$Message) {
     $dlg.Controls.AddRange(@($lbl, $how, $lst, $status, $look, $browse, $ok, $cancel))
     $tip = New-Object System.Windows.Forms.ToolTip
     $tip.SetToolTip($look, 'Optional. Suggest folders based on the project lists of Claude Code and VS Code and on common folder names. Reads folder names only, on this computer.')
-    $tip.SetToolTip($lst, 'Suggested folders: ones that hold projects you opened in Claude Code or VS Code, or that look like project folders (most opened projects first).')
-    $tip.SetToolTip($browse, 'Pick any folder. Each of its subfolders becomes a project in the list.')
-    $tip.SetToolTip($ok, 'Remember this folder (saved as "root" in config.json) and open the picker.')
+    $tip.SetToolTip($lst, 'Check every folder whose subfolders are your projects. Folders already in use are listed first; uncheck one to stop using it.')
+    $tip.SetToolTip($browse, 'Add any folder. Each of its subfolders becomes a project in the list.')
+    $tip.SetToolTip($ok, 'Remember the checked folders (saved as "roots" in config.json) and open the picker.')
     $tip.SetToolTip($cancel, 'Close without choosing. You will be asked again next time.')
-    $lst.Add_SelectedIndexChanged({ $ok.Enabled = ($lst.SelectedIndex -ge 0) }.GetNewClosure())
-    $lst.Add_DoubleClick({ if ($lst.SelectedIndex -ge 0) { $dlg.DialogResult = [System.Windows.Forms.DialogResult]::OK; $dlg.Close() } }.GetNewClosure())
+    # Add an entry (skipping duplicates); returns its index.
+    $addItem = {
+        param($path, $text, $checked)
+        $idx = -1
+        for ($k = 0; $k -lt $paths.Count; $k++) { if ([string]$paths[$k] -ieq $path) { $idx = $k; break } }
+        if ($idx -lt 0) { [void]$paths.Add($path); $idx = $lst.Items.Add($text) }
+        if ($checked) { $lst.SetItemChecked($idx, $true) }
+        $idx
+    }.GetNewClosure()
+    foreach ($c in @($Current)) { if ($c) { [void](& $addItem $c $c $true) } }
+    $refreshOk = { $ok.Enabled = ($lst.CheckedItems.Count -gt 0) }.GetNewClosure()
+    $lst.Add_ItemCheck({ param($s, $e) $n = $lst.CheckedItems.Count; if ($e.NewValue -eq 'Checked') { $n++ } else { $n-- }; $ok.Enabled = ($n -gt 0) }.GetNewClosure())
+    & $refreshOk
     $look.Add_Click({
         $look.Enabled = $false; $status.Text = 'Looking...'; $dlg.Update()
         $cands = @(); try { $cands = @(& $Scan) } catch { }
+        $first = $true
         foreach ($c in $cands) {
-            [void]$paths.Add($c.Path)
             $desc = "$($c.Folders) folders"; if ($c.Repos) { $desc = "$($c.Repos) git repositories, $($c.Folders) folders" }
             if ($c.Opened) { $desc = "$($c.Opened) opened in $(@($c.Sources) -join ' / '); $desc" }
-            [void]$lst.Items.Add("$($c.Path)   ($desc)")
+            [void](& $addItem $c.Path "$($c.Path)   ($desc)" ($first -and -not @($Current).Count)); $first = $false
         }
-        if ($lst.Items.Count) { $lst.SelectedIndex = 0; $status.Text = 'Pick one of these, or use Browse. (Each suggestion says where it came from.)' }
+        if ($cands.Count) { $status.Text = 'Check the folders to use, or use Browse. (Each suggestion says where it came from.)' }
         else { $status.Text = 'No likely folders found. Use Browse to pick yours.' }
     }.GetNewClosure())
     $browse.Add_Click({
         $fb = New-Object System.Windows.Forms.FolderBrowserDialog
-        $fb.Description = 'Choose the folder that contains your project folders'
-        if ($fb.ShowDialog($dlg) -eq [System.Windows.Forms.DialogResult]::OK) {
-            [void]$paths.Add($fb.SelectedPath); [void]$lst.Items.Add($fb.SelectedPath); $lst.SelectedIndex = $lst.Items.Count - 1
-        }
+        $fb.Description = 'Choose a folder that contains your project folders'
+        if ($fb.ShowDialog($dlg) -eq [System.Windows.Forms.DialogResult]::OK) { [void](& $addItem $fb.SelectedPath $fb.SelectedPath $true) }
     }.GetNewClosure())
     $res = $dlg.ShowDialog()
-    $out = $null
-    if ($res -eq [System.Windows.Forms.DialogResult]::OK -and $lst.SelectedIndex -ge 0) { $out = [string]$paths[$lst.SelectedIndex] }
+    $out = @()
+    if ($res -eq [System.Windows.Forms.DialogResult]::OK) { foreach ($idx in $lst.CheckedIndices) { $out += [string]$paths[$idx] } }
     $dlg.Dispose()
     if ($logo) { $logo.Dispose() }
     $out
 }
 
 # ---------------------------------------------------------------- discover
-# First run (or a moved/empty projects folder): ask where the projects are instead of failing silently. Picker only; the command-line switches never prompt.
+# First run (or moved/empty project folders): ask where the projects are instead of failing silently. Picker only; the command-line switches never prompt.
 if (-not $PSBoundParameters.ContainsKey('Root') -and $Picker -eq 'Forms' -and -not ($List -or $All -or $Cascade -or $Focus -or $CheckUpdate -or $Project.Count)) {
     $why = ''
     if ($firstRun) { $why = 'Welcome! Before the first launch, tell Workspace Wrangler where your projects live.' }
-    if (-not (Test-Path -LiteralPath $Root -PathType Container)) { $why = "The projects folder `"$Root`" does not exist on this computer." }
-    elseif (-not @(Get-ChildItem -LiteralPath $Root -Directory -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike '.*' }).Count) { $why = "The projects folder `"$Root`" has no folders in it." }
+    $okRoots = @($Roots | Where-Object { Test-Path -LiteralPath $_ -PathType Container })
+    $hasFolders = ($ExtraProjects | Where-Object { Test-Path -LiteralPath $_ -PathType Container }).Count -gt 0
+    foreach ($r in $okRoots) { if (@(Get-ChildItem -LiteralPath $r -Directory -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike '.*' }).Count) { $hasFolders = $true; break } }
+    if (-not $Roots.Count) { $why = 'No projects folder is set yet.' }
+    elseif (-not $okRoots.Count) { $why = "The projects folder$(if ($Roots.Count -gt 1) { 's' }) $(($Roots | ForEach-Object { '"' + $_ + '"' }) -join ', ') do$(if ($Roots.Count -eq 1) { 'es' }) not exist on this computer." }
+    elseif (-not $hasFolders) { $why = 'The projects folders have no folders in them.' }
     if ($why) {
-        $pick = Show-RootDialog { @(Find-ProjectRootCandidates) } $why
-        if (-not $pick) { exit 0 }
-        $Root = $pick; Set-ConfigValue 'root' $pick
+        $picks = @(Show-RootDialog { @(Find-ProjectRootCandidates) } $why $okRoots)
+        if (-not $picks.Count) { exit 0 }
+        $Roots = $picks; Set-ProjectRoots $picks
     }
 }
-if (-not (Test-Path -LiteralPath $Root)) { Write-Warning "Root not found: $Root. Set `"root`" in config.json (or pass -Root <folder>)."; exit 1 }
+$Roots = @($Roots | Where-Object { Test-Path -LiteralPath $_ -PathType Container })
+if (-not $Roots.Count -and -not @($ExtraProjects | Where-Object { Test-Path -LiteralPath $_ -PathType Container }).Count) { Write-Warning "No projects folder found. Set `"root`" or `"roots`" in config.json (or pass -Root <folder>)."; exit 1 }
 
 if ($Picker -eq 'Forms' -and -not $List -and -not $All -and $Project.Count -eq 0 -and -not $DryRun) { Show-Splash }
-$dirs = @(Get-ChildItem -LiteralPath $Root -Directory -Force |
-    Where-Object { $Ignore -notcontains $_.Name -and $_.Name -notlike '.*' })
+# Every subfolder of every project folder, plus the individual "projects" folders, de-duplicated by path. When two projects share a
+# folder name, later ones are labelled "name (parentfolder)" so tab titles, presets and saved layouts (all keyed by name) stay unique.
+$dirs = @()
+$seenPaths = @{}; $seenNames = @{}
+function Add-ProjectDir([string]$FullPath) {
+    $full = $FullPath.TrimEnd('\')
+    $leaf = Split-Path -Leaf $full
+    if (-not $leaf -or $leaf -like '.*' -or $Ignore -contains $leaf) { return }
+    $key = $full.ToLowerInvariant()
+    if ($seenPaths.ContainsKey($key)) { return }
+    $seenPaths[$key] = $true
+    $name = $leaf
+    if ($seenNames.ContainsKey($name.ToLowerInvariant())) {
+        $name = "$leaf ($(Split-Path -Leaf (Split-Path -Parent $full)))"
+        $n = 2; while ($seenNames.ContainsKey($name.ToLowerInvariant())) { $name = "$leaf ($(Split-Path -Leaf (Split-Path -Parent $full)) $n)"; $n++ }
+    }
+    $seenNames[$name.ToLowerInvariant()] = $true
+    $script:dirs += [pscustomobject]@{ Name = $name; FullName = $full }
+}
+foreach ($r in $Roots) { foreach ($d in @(Get-ChildItem -LiteralPath $r -Directory -Force -ErrorAction SilentlyContinue)) { Add-ProjectDir $d.FullName } }
+foreach ($p in $ExtraProjects) { if (Test-Path -LiteralPath $p -PathType Container) { Add-ProjectDir (Resolve-Path -LiteralPath $p).ProviderPath } }
 
 function New-Row($d, [bool]$Scan, [bool]$Git, $Facts) {
     $la = $null; $gi = $null
@@ -2512,7 +2579,7 @@ if ($All) {
     $onArrange = { param($style, $ignoreSaved) Invoke-ArrangeOpen ([string]$style) ([bool]$ignoreSaved) }
     $onGitOp = { param($op, $row, $form, $preset) Invoke-PickerGitOp ([string]$op) $row $form ([string]$preset) }
     $onCascade = { param($self) Invoke-CascadeFront ([int64]$self) }
-    $actions = @{ About = { param($owner) Show-AboutDialog $owner }; LaunchOptions = { param($row, $owner) Invoke-PickerLaunchOptions $row $owner }; NewProject = { param($owner) Invoke-PickerNewProject $owner }; RenameProject = { param($row, $owner) Invoke-PickerRenameProject $row $owner }; ChooseRoot = { $p = Show-RootDialog { @(Find-ProjectRootCandidates) } "Current projects folder: $Root"; if ($p) { Set-ConfigValue 'root' $p }; $p } }
+    $actions = @{ About = { param($owner) Show-AboutDialog $owner }; LaunchOptions = { param($row, $owner) Invoke-PickerLaunchOptions $row $owner }; NewProject = { param($owner) Invoke-PickerNewProject $owner }; RenameProject = { param($row, $owner) Invoke-PickerRenameProject $row $owner }; ChooseRoot = { $p = @(Show-RootDialog { @(Find-ProjectRootCandidates) } 'Choose the folders that hold your projects.' @($Roots)); if ($p.Count) { Set-ProjectRoots $p }; [bool]$p.Count } }
     $onIde = { param($paths) Invoke-OpenIde ([string[]]$paths) }
     # Refresh support: start Get-ProjectFacts for every listed row in a background runspace (returns $null when git info is off),
     # then apply the finished result to the row objects in place. The folder list itself is not rescanned.

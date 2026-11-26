@@ -18,7 +18,9 @@ All three files live in `~\.config\workspace_app\` (outside the repo, so updates
 
 | Key | Type | Default | Meaning | Override |
 |---|---|---|---|---|
-| `root` | string | `C:\code` | Folder whose subfolders are the projects. If it is missing or empty the picker asks (and saves your answer here); also **Settings > Change projects folder...** | `-Root` |
+| `roots` | string[] | `[]` | Folders whose subfolders are the projects; several can be used at once and are merged into one list. Takes precedence over `root`. Set from the first-run dialog or **Settings > Projects folders...** (which also writes `root`). If a project folder name appears in more than one folder, the later ones are shown as `name (parentfolder)`. | `-Root a,b` |
+| `root` | string | `C:\code` | The single projects folder, used when `roots` is empty (older configs keep working). | `-Root` |
+| `projects` | string[] | `[]` | Individual folders that are projects themselves (not parents of projects), added to the list in addition to `roots`; handy for a one-off project in another place. Ignored when `-Root` is given. | |
 | `top` | int | `0` | Show only the N most recent; `0` = all (with `-All`: how many to launch, `0` = 15) | `-Top` |
 | `ignore` | string[] | `[]` | Folder names to skip | `-Ignore` |
 | `noiseDirs` | string[] | `.git`, `node_modules`, `.venv`, ... | Directories skipped when scanning a non-git project for its newest file | none |

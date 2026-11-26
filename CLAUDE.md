@@ -20,7 +20,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Install-Shortcut.ps1  
 
 ## Architecture
 
-One script, pipeline: load config/state/presets → discover project folders under `Root` → last-active per project → sort (newest first) → pick (WinForms, Out-GridView, or none with the command-line switches) → build one `wt` argument string per project (each opens its own new window; `-Window <id>` merges them into one call) → `Start-Process wt.exe`.
+One script, pipeline: load config/state/presets → discover project folders under each of `$Roots` (config `roots`, else `root`; plus the single `projects` folders; duplicate names become `name (parentfolder)`) → last-active per project → sort (newest first) → pick (WinForms, Out-GridView, or none with the command-line switches) → build one `wt` argument string per project (each opens its own new window; `-Window <id>` merges them into one call) → `Start-Process wt.exe`.
 
 - **Last active**: latest git commit time if `.git` exists; otherwise newest file time, skipping noise dirs, capped by file count and depth.
 - **`claude --continue`** only if `~\.claude\projects\<path with every non-alphanumeric char → '-'>` exists (e.g. `C:\code\foo` → `C--code-foo`) and `-Fresh` isn't set.

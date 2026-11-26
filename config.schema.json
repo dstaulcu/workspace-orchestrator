@@ -5,9 +5,11 @@
   "additionalProperties": false,
   "properties": {
     "$schema":      { "type": "string" },
-    "root":         { "type": "string", "default": "C:\\code", "description": "Folder whose immediate subfolders are the projects. Overridden by -Root." },
+    "roots":        { "type": "array", "items": { "type": "string" }, "default": [], "description": "Folders whose immediate subfolders are the projects; several can be used and are merged. Takes precedence over root. Overridden by -Root." },
+    "root":         { "type": "string", "default": "C:\\code", "description": "The single projects folder, used when roots is empty. Overridden by -Root." },
+    "projects":     { "type": "array", "items": { "type": "string" }, "default": [], "description": "Individual folders that are projects themselves, added in addition to roots. Ignored when -Root is given." },
     "top":          { "type": "integer", "minimum": 0, "default": 0, "description": "Show only the N most recent projects; 0 = all. With -All: how many to launch (0 = 15). Overridden by -Top." },
-    "ignore":       { "type": "array", "items": { "type": "string" }, "default": [], "description": "Folder names under root to skip. Overridden by -Ignore." },
+    "ignore":       { "type": "array", "items": { "type": "string" }, "default": [], "description": "Folder names under the project folders to skip. Overridden by -Ignore." },
     "noiseDirs":    { "type": "array", "items": { "type": "string" }, "description": "Directory names skipped when scanning a non-git project for its newest file." },
     "maxScanFiles": { "type": "integer", "minimum": 1, "default": 5000, "description": "Cap on files examined per non-git project when finding last activity." },
     "maxScanDepth": { "type": "integer", "minimum": 1, "default": 6, "description": "Cap on folder depth for that scan." },

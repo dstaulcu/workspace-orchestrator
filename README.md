@@ -23,7 +23,7 @@ A small picker that lists your project folders (newest activity first) and opens
    powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Install-Shortcut.ps1
    ```
    This puts one **Workspace Wrangler** shortcut on your Desktop.
-3. Double-click **Workspace Wrangler**. Each subfolder of your projects folder is a project. If the default, `C:\code`, doesn't exist or is empty, the picker asks where your projects live: it suggests the folders your tools already use (where you opened projects in Claude Code or VS Code, found by reading their local history files; nothing is sent anywhere) and common ones such as `~\source\repos` or `~\src`, or you can **Browse...** to any folder, and it remembers the answer. Change it later under **Settings > Change projects folder...**.
+3. Double-click **Workspace Wrangler**. Each subfolder of your projects folder is a project (you can use several folders; they merge into one list). The first time, the picker asks where your projects live: it suggests the folders your tools already use (where you opened projects in Claude Code or VS Code, found by reading their local history files; nothing is sent anywhere) and common ones such as `~\source\repos` or `~\src`, or you can **Browse...** to any folder, and it remembers the answer. Change them later under **Settings > Projects folders...**.
 
 To try it without installing: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Start-App.ps1`.
 **Update:** the picker offers new releases itself (see below). **Uninstall:** `.\Uninstall-App.ps1` (add `-WhatIf` to preview, `-RemoveSettings` to also delete settings).

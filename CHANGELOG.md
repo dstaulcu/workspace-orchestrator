@@ -4,6 +4,11 @@ All notable changes to Workspace Wrangler. Newest first. The picker opens this f
 and offers it after an update. Add new entries under **Unreleased** as you work; rename that heading to the
 version when you release.
 
+## 1.4.0 - 2026-11-26
+
+### Added
+- **Several project folders.** `config.json` takes a `roots` list (the single `root` still works) and a `projects` list for individual folders that are projects themselves. The first-run dialog and **Settings > Projects folders...** now let you check several folders (with the optional, on-request folder suggestions), and everything merges into one list. If two projects share a folder name, the later one is shown as `name (parentfolder)`, so tab titles, presets and saved layouts stay unique. **New project** asks which folder to create the project in when you use more than one. `-Root a,b` accepts several folders too.
+
 ## 1.3.1 - 2026-11-26
 
 ### Fixed
