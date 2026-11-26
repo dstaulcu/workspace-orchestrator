@@ -57,7 +57,7 @@ param(
 )
 
 # ---------------------------------------------------------------- config / state
-$AppVersion = '1.2.0'   # bump on every release; the update check compares it with the latest GitHub release tag
+$AppVersion = '1.2.1'   # bump on every release; the update check compares it with the latest GitHub release tag
 $cfg = @{
     root = 'C:\code'; top = 0; ignore = @()
     noiseDirs = @('.git','node_modules','.venv','venv','__pycache__','dist','build','.next','bin','obj','.idea','.vscode')
@@ -1883,23 +1883,31 @@ function Test-ProjectName([string]$Name, [string]$ParentDir, [string]$Current = 
 # Dialog: name for a new project (+ git init / README / open in IDE). Returns $null or { Name, GitInit, Readme, OpenIde }.
 function Show-NewProjectDialog($OwnerForm, [string]$ParentDir) {
     $dlg = New-Object System.Windows.Forms.Form
-    $dlg.Text = 'New project'; $dlg.ClientSize = New-Object System.Drawing.Size(470, 230)
+    $dlg.Text = 'New project'; $dlg.ClientSize = New-Object System.Drawing.Size(470, 262)
     $dlg.FormBorderStyle = 'FixedDialog'; $dlg.MaximizeBox = $false; $dlg.MinimizeBox = $false; $dlg.StartPosition = 'CenterParent'
     $l1 = New-Object System.Windows.Forms.Label; $l1.Text = 'Project name:'; $l1.AutoSize = $true; $l1.Location = New-Object System.Drawing.Point(12, 16)
     $txt = New-Object System.Windows.Forms.TextBox; $txt.Location = New-Object System.Drawing.Point(110, 12); $txt.Width = 350
-    $where = New-Object System.Windows.Forms.Label; $where.Location = New-Object System.Drawing.Point(12, 44); $where.Size = New-Object System.Drawing.Size(448, 32)
-    $chkGit = New-Object System.Windows.Forms.CheckBox; $chkGit.Text = 'Initialize a git repository (git init)'; $chkGit.Checked = $true; $chkGit.AutoSize = $true; $chkGit.Location = New-Object System.Drawing.Point(110, 82)
-    $chkRead = New-Object System.Windows.Forms.CheckBox; $chkRead.Text = 'Create a README.md'; $chkRead.Checked = $true; $chkRead.AutoSize = $true; $chkRead.Location = New-Object System.Drawing.Point(110, 108)
-    $chkIde = New-Object System.Windows.Forms.CheckBox; $chkIde.Text = 'Open it in my IDE afterwards'; $chkIde.Checked = $false; $chkIde.AutoSize = $true; $chkIde.Location = New-Object System.Drawing.Point(110, 134)
-    $err = New-Object System.Windows.Forms.Label; $err.ForeColor = [System.Drawing.Color]::Firebrick; $err.Location = New-Object System.Drawing.Point(12, 160); $err.Size = New-Object System.Drawing.Size(448, 20)
-    $ok = New-Object System.Windows.Forms.Button; $ok.Text = 'Create'; $ok.Location = New-Object System.Drawing.Point(274, 190); $ok.Size = New-Object System.Drawing.Size(90, 28)
-    $cancel = New-Object System.Windows.Forms.Button; $cancel.Text = 'Cancel'; $cancel.Location = New-Object System.Drawing.Point(374, 190); $cancel.Size = New-Object System.Drawing.Size(90, 28)
+    # Gray placeholder text inside the box (Windows cue banner); harmless if the type can't be loaded.
+    try {
+        if (-not ('WoCue' -as [type])) { Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class WoCue { [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr SendMessage(IntPtr h, int m, IntPtr w, string l); }' }
+        $txt.Add_HandleCreated({ param($s, $e) [void][WoCue]::SendMessage($s.Handle, 0x1501, [IntPtr]1, 'noun-verb, e.g. page-distill') }.GetNewClosure())
+    } catch { }
+    $naming = New-Object System.Windows.Forms.Label; $naming.Location = New-Object System.Drawing.Point(110, 38); $naming.Size = New-Object System.Drawing.Size(350, 32)
+    $naming.ForeColor = [System.Drawing.SystemColors]::GrayText
+    $naming.Text = "Tip: a noun-verb name reads well, e.g. page-distill or log-triage."
+    $where = New-Object System.Windows.Forms.Label; $where.Location = New-Object System.Drawing.Point(12, 76); $where.Size = New-Object System.Drawing.Size(448, 32)
+    $chkGit = New-Object System.Windows.Forms.CheckBox; $chkGit.Text = 'Initialize a git repository (git init)'; $chkGit.Checked = $true; $chkGit.AutoSize = $true; $chkGit.Location = New-Object System.Drawing.Point(110, 114)
+    $chkRead = New-Object System.Windows.Forms.CheckBox; $chkRead.Text = 'Create a README.md'; $chkRead.Checked = $true; $chkRead.AutoSize = $true; $chkRead.Location = New-Object System.Drawing.Point(110, 140)
+    $chkIde = New-Object System.Windows.Forms.CheckBox; $chkIde.Text = 'Open it in my IDE afterwards'; $chkIde.Checked = $false; $chkIde.AutoSize = $true; $chkIde.Location = New-Object System.Drawing.Point(110, 166)
+    $err = New-Object System.Windows.Forms.Label; $err.ForeColor = [System.Drawing.Color]::Firebrick; $err.Location = New-Object System.Drawing.Point(12, 192); $err.Size = New-Object System.Drawing.Size(448, 20)
+    $ok = New-Object System.Windows.Forms.Button; $ok.Text = 'Create'; $ok.Location = New-Object System.Drawing.Point(274, 222); $ok.Size = New-Object System.Drawing.Size(90, 28)
+    $cancel = New-Object System.Windows.Forms.Button; $cancel.Text = 'Cancel'; $cancel.Location = New-Object System.Drawing.Point(374, 222); $cancel.Size = New-Object System.Drawing.Size(90, 28)
     $cancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
     $ok.DialogResult = [System.Windows.Forms.DialogResult]::OK
     $dlg.AcceptButton = $ok; $dlg.CancelButton = $cancel
-    $dlg.Controls.AddRange(@($l1, $txt, $where, $chkGit, $chkRead, $chkIde, $err, $ok, $cancel))
+    $dlg.Controls.AddRange(@($l1, $txt, $naming, $where, $chkGit, $chkRead, $chkIde, $err, $ok, $cancel))
     $tip = New-Object System.Windows.Forms.ToolTip
-    $tip.SetToolTip($txt, 'The new folder name (letters, digits, spaces, "-" and "_" are safest).')
+    $tip.SetToolTip($txt, 'The new folder name (letters, digits, "-" and "_" are safest). A noun-verb name such as page-distill is suggested, not required.')
     $tip.SetToolTip($chkGit, 'Run git init in the new folder so it is a repository from the start.')
     $tip.SetToolTip($chkRead, 'Create a README.md containing the project name as a heading.')
     $tip.SetToolTip($chkIde, 'Open the new folder in your IDE (config "ide") right after creating it.')
