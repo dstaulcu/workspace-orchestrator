@@ -4,6 +4,12 @@ All notable changes to Workspace Wrangler. Newest first. The picker opens this f
 and offers it after an update. Add new entries under **Unreleased** as you work; rename that heading to the
 version when you release.
 
+## 1.5.0 - 2026-11-26
+
+### Added
+- **Demo workspace:** `tools/New-DemoWorkspace.ps1 -Launch` builds a throwaway set of fake projects (dirty and clean repos, fake GitHub, GitLab and Azure remotes, two `api` projects) with its own settings and a stand-in for `claude`, so you can try the picker without touching your own folders; `-Remove` deletes it. It uses the new `WORKSPACE_APP_CONFIG` environment variable, which points the app at any settings folder.
+- A screenshot tour (`docs/tour.md`, images in `docs/images/`), a short animated demo (`docs/images/demo.gif`) and a gallery in the README, all captured from the demo workspace.
+
 ## 1.4.0 - 2026-11-26
 
 ### Added

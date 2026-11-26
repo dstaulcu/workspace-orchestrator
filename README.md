@@ -13,6 +13,16 @@ A small picker that lists your project folders (newest activity first) and opens
 - **See where things stand:** last activity, branch, dirty/clean and a link to each repo's remote.
 - **Do the chores:** open projects in your IDE, create repositories on GitHub / GitLab / Azure DevOps, cascade all windows with a hotkey.
 
+## Take a look
+
+![A short demo: filter, check three projects, Launch, and each opens in its own color-coded terminal window](docs/images/demo.gif)
+
+![The picker with open projects shown in green](docs/images/picker.png)
+
+![Three color-coded Windows Terminal windows cascaded so every title bar shows](docs/images/cascade.png)
+
+More in the [tour](docs/tour.md). To try it without pointing it at your own projects, run `.\tools\New-DemoWorkspace.ps1 -Launch`: it builds a throwaway workspace of fake projects with its own settings, and removes cleanly with `-Remove`.
+
 ## Install
 
 **Requirements:** Windows 10/11, [Windows Terminal](https://aka.ms/terminal), the built-in Windows PowerShell 5.1, [Claude Code](https://claude.com/claude-code) (`claude` on PATH), [Git](https://git-scm.com/download/win) and [Visual Studio Code](https://code.visualstudio.com/). The installer checks for Git and VS Code and stops with instructions if either is missing. Optional: `gh` / `glab` / `az` only for creating remote repositories.

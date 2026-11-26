@@ -57,7 +57,7 @@ param(
 )
 
 # ---------------------------------------------------------------- config / state
-$AppVersion = '1.4.0'   # bump on every release; the update check compares it with the latest GitHub release tag
+$AppVersion = '1.5.0'   # bump on every release; the update check compares it with the latest GitHub release tag
 $cfg = @{
     root = 'C:\code'; roots = @(); projects = @(); top = 0; ignore = @()
     noiseDirs = @('.git','node_modules','.venv','venv','__pycache__','dist','build','.next','bin','obj','.idea','.vscode')
@@ -69,11 +69,14 @@ $cfg = @{
 }
 # Settings live outside the repo so they survive updates; files from older versions are moved over once.
 $ConfigDir = Join-Path $env:USERPROFILE '.config\workspace_app'
+# WORKSPACE_APP_CONFIG points the app at a different settings folder (used by tools/New-DemoWorkspace.ps1; handy for a portable or throwaway setup).
+$ConfigOverride = [bool]$env:WORKSPACE_APP_CONFIG
+if ($ConfigOverride) { $ConfigDir = $env:WORKSPACE_APP_CONFIG }
 # Earlier versions kept settings in ~\.config\workspace_wrangler (and before that workspace_picker): carry the newest one over once (read it in place during -DryRun).
 # Only the interactive picker copies them (the folder is left in place as a backup, so an older picker still running is not
 # broken); -DryRun and the command-line switches just read the old folder in place. Runs when the new folder has none of our files yet.
 $hasOwn = @('config.json', 'state.json', 'presets.json', 'layouts.json' | Where-Object { Test-Path -LiteralPath (Join-Path $ConfigDir $_) }).Count -gt 0
-if (-not $hasOwn) {
+if (-not $hasOwn -and -not $ConfigOverride) {
     $readOnlyRun = $DryRun -or $List -or $All -or $CheckUpdate -or $Cascade -or [bool]$Focus -or ($Project.Count -gt 0)
     foreach ($legacyName in 'workspace_wrangler', 'workspace_picker') {
         $legacyDir = Join-Path $env:USERPROFILE (Join-Path '.config' $legacyName)
