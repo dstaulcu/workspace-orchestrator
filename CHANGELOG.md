@@ -4,6 +4,11 @@ All notable changes to Workspace Wrangler. Newest first. The picker opens this f
 and offers it after an update. Add new entries under **Unreleased** as you work; rename that heading to the
 version when you release.
 
+## 1.1.1 - 2026-11-25
+
+### Changed
+- **Refresh** now also re-reads each project's git branch, clean/dirty state, remote and last-activity time, not just which projects have tabs open.
+
 ## 1.1.0 - 2026-11-25
 
 ### Added

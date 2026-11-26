@@ -57,7 +57,7 @@ param(
 )
 
 # ---------------------------------------------------------------- config / state
-$AppVersion = '1.1.0'   # bump on every release; the update check compares it with the latest GitHub release tag
+$AppVersion = '1.1.1'   # bump on every release; the update check compares it with the latest GitHub release tag
 $cfg = @{
     root = 'C:\code'; top = 0; ignore = @()
     noiseDirs = @('.git','node_modules','.venv','venv','__pycache__','dist','build','.next','bin','obj','.idea','.vscode')
@@ -1047,7 +1047,7 @@ function New-TabClause([string]$Title, [string]$Dir, [string]$Command, [string]$
 # list of open projects comes from $GetRunning (all scriptblocks defined in the main script,
 # because WinForms handlers are closures that can't see script-scope state or functions).
 function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
-                          [scriptblock]$OnLaunch, [scriptblock]$OnSwitch, [scriptblock]$GetRunning, [int]$RefreshSeconds = 0, [scriptblock]$OnSaveLayout, [scriptblock]$OnArrange, [scriptblock]$OnGitOp, [hashtable]$Update, [scriptblock]$OnIde, [scriptblock]$OnCascade, [hashtable]$Actions) {
+                          [scriptblock]$OnLaunch, [scriptblock]$OnSwitch, [scriptblock]$GetRunning, [int]$RefreshSeconds = 0, [scriptblock]$OnSaveLayout, [scriptblock]$OnArrange, [scriptblock]$OnGitOp, [hashtable]$Update, [scriptblock]$OnIde, [scriptblock]$OnCascade, [hashtable]$Actions, [scriptblock]$OnRefreshFacts) {
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
     [System.Windows.Forms.Application]::EnableVisualStyles()
@@ -1251,7 +1251,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
     $ctrlTip.SetToolTip($btnIde, 'Open the checked and the highlighted projects in your IDE, one new window per project. Visual Studio Code by default; set "ide" (and "ideArgs") in config.json to use another.')
     $ctrlTip.SetToolTip($btnGit, 'Git actions for the highlighted project: open its repository in your browser, initialize a local git repository, or create a new GitHub repository (in an organization you pick) and add it as origin. Also on the right-click menu of a row.')
     $ctrlTip.SetToolTip($btnArrange, 'Arrange the windows of all open projects now. Choose cascade, grid, side by side or stacked, or reset windows to the default size. Windows with a saved spot (Settings > Save window layout) go there; hold Shift while choosing to ignore saved spots.')
-    $ctrlTip.SetToolTip($btnRefresh, 'Re-check which projects have tabs open in Windows Terminal (also happens when you return to this window).')
+    $ctrlTip.SetToolTip($btnRefresh, 'Re-check which projects have tabs open in Windows Terminal and re-read each project''s git branch, clean/dirty state, remote and last-activity time.')
     $ctrlTip.SetToolTip($btnSwitch, 'Bring the highlighted project''s open tab and its terminal window to the foreground. Works for projects marked open.')
     $ctrlTip.SetToolTip($btnGo, 'Open the checked projects (or the highlighted one), each in its own new Windows Terminal window with a Claude Code tab and a shell tab. Projects already open are brought to the front instead; hold Shift while clicking to open a new copy anyway.')
     $ctrlTip.SetToolTip($btnClose, 'Close the picker without launching anything.')
@@ -1340,7 +1340,19 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
         if ($e.Item.Checked) { [void]$ctx.Checked.Add([string]$e.Item.Tag) } else { [void]$ctx.Checked.Remove([string]$e.Item.Tag) }
     }.GetNewClosure())
     $filterBox.Add_TextChanged({ & $fill }.GetNewClosure())
-    $btnRefresh.Add_Click({ & $refresh }.GetNewClosure())
+    # The Refresh button also re-reads git state (branch, dirty, remote) and last-active time; the cheap tab-only refresh above
+    # still runs on its own when the window is reactivated and on the background timer.
+    $btnRefresh.Add_Click({
+        if ($OnRefreshFacts) {
+            $status.Text = 'Refreshing git state...'; $form.Update()
+            try {
+                & $OnRefreshFacts
+                foreach ($r in $Rows) { if ($r.RemoteUrl) { $ctx.Remote[$r.Path] = $r.RemoteUrl } else { $ctx.Remote.Remove($r.Path) } }
+            } catch { }
+        }
+        & $refresh
+        $status.Text = '{0} open project(s); git state refreshed.' -f $ctx.Running.Count
+    }.GetNewClosure())
     # Arrange: pick a style from a menu. Shift while choosing = ignore saved spots.
     $arrMenu = New-Object System.Windows.Forms.ContextMenuStrip
     foreach ($opt in @(@('Cascade (overlapping, title bars visible)', 'cascade'), @('Tile in a grid', 'grid'), @('Side by side (columns)', 'columns'), @('Stacked (rows)', 'rows'), @('-', ''), @('Reset window size (keep positions)', 'resize'), @('Restore saved layout only', 'none'))) {
@@ -2318,6 +2330,24 @@ if ($All) {
     $onCascade = { param($self) Invoke-CascadeFront ([int64]$self) }
     $actions = @{ LaunchOptions = { param($row, $owner) Invoke-PickerLaunchOptions $row $owner }; NewProject = { param($owner) Invoke-PickerNewProject $owner }; RenameProject = { param($row, $owner) Invoke-PickerRenameProject $row $owner }; ChooseRoot = { $p = Show-RootDialog @(Find-ProjectRootCandidates) "Current projects folder: $Root"; if ($p) { Set-ConfigValue 'root' $p }; $p } }
     $onIde = { param($paths) Invoke-OpenIde ([string[]]$paths) }
+    # Re-read git info and last-active for the listed rows, updating the row objects in place (the folder list itself is not rescanned).
+    $onRefreshFacts = {
+        $ds = @($rows | ForEach-Object { Get-Item -LiteralPath $_.Path -ErrorAction SilentlyContinue } | Where-Object { $_ })
+        $f = Get-ProjectFacts $ds $true $needGit
+        foreach ($r in $rows) {
+            if (-not $f.ContainsKey($r.Path)) { continue }
+            $la = $f[$r.Path].La; $gi = $f[$r.Path].Gi
+            $r.LastActiveDt = $la
+            $r.Relative = $(if ($la) { Format-Relative $la } else { '' })
+            $r.LastActive = $(if ($la) { $la.ToString('yyyy-MM-dd HH:mm') } else { '' })
+            $r.IsGit = Test-Path -LiteralPath (Join-Path $r.Path '.git')
+            $r.RemoteUrl = $(if ($gi) { $gi.RemoteUrl } else { $null })
+            $r.Branch = $(if ($gi) { $gi.Branch } else { $null })
+            $r.Dirty = $(if ($gi) { $gi.Dirty } else { $null })
+            $r.HasHistory = Test-ClaudeHistory $r.Path
+            $r.HasPreset = [bool](Get-Preset $r.Name)
+        }
+    }
     $update = @{
         Current = $AppVersion
         Start   = { param($force) Start-UpdateCheck ([bool]$force) }
@@ -2328,6 +2358,6 @@ if ($All) {
         Restart = { Restart-Wrangler }
         Changelog = { Open-Changelog }
     }
-    [void](Show-FormsPicker $rows $Filter @($state.last) $onLaunch $onSwitch $getRunning ([int]$cfg.refreshSeconds) $onSaveLayout $onArrange $onGitOp $update $onIde $onCascade $actions)
+    [void](Show-FormsPicker $rows $Filter @($state.last) $onLaunch $onSwitch $getRunning ([int]$cfg.refreshSeconds) $onSaveLayout $onArrange $onGitOp $update $onIde $onCascade $actions $onRefreshFacts)
     if (-not $DryRun) { Save-State }
 }
