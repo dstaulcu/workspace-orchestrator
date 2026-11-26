@@ -46,7 +46,7 @@ Check projects and press **Launch** (or Enter). Type in the filter box to narrow
 |---|---|
 | **Launch** | Open checked (or highlighted) projects, one window each. Already-open projects are raised instead; **Shift** forces a new copy. |
 | **Switch** | Bring the highlighted project's open tab and window to the front. |
-| **Refresh** | Re-detect open projects (also automatic every `refreshSeconds`). |
+| **Refresh** | Re-detect open projects, re-read each project's git state and last activity, and pick up project folders you created or deleted since the picker started (the open-project check also runs automatically every `refreshSeconds`). Folders are not rescanned when the list was narrowed with `-Filter`, `-Top` or `-Project`. |
 | **Arrange** | Cascade, grid, side by side, stacked, reset size. **Shift** ignores saved spots. |
 | **Git** | Open the repo in a browser, `git init`, create a remote (GitHub / GitLab / Azure DevOps submenus) or add an existing remote URL. Also on the right-click menu. |
 | **IDE** | Open every checked and highlighted project in your IDE, one window each (`ide`, default `code`). |

@@ -57,7 +57,7 @@ param(
 )
 
 # ---------------------------------------------------------------- config / state
-$AppVersion = '1.5.0'   # bump on every release; the update check compares it with the latest GitHub release tag
+$AppVersion = '1.5.1'   # bump on every release; the update check compares it with the latest GitHub release tag
 $cfg = @{
     root = 'C:\code'; roots = @(); projects = @(); top = 0; ignore = @()
     noiseDirs = @('.git','node_modules','.venv','venv','__pycache__','dist','build','.next','bin','obj','.idea','.vscode')
@@ -1493,23 +1493,29 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
         if (-not $t.Handle.IsCompleted) { return }
         $factsTimer.Stop(); $ctx.FactsTask = $null; $btnRefresh.Enabled = $true
         $err = ''
-        try { [void](& $OnFactsDone $t) } catch { $err = $_.Exception.Message }
-        if ($err) { $status.Text = "Could not refresh git state: $err"; return }
-        # Keep newest-activity-first order (sorted in place so every closure still sees the same array).
+        $res = $null
+        try { $res = & $OnFactsDone $t } catch { $err = $_.Exception.Message }
+        if ($err) { $status.Text = "Could not refresh: $err"; & $fill; return }   # rows may already have changed: redraw
+        # Keep newest-activity-first order (sorted in place so every closure still sees the same list).
         $sorted = @($Rows | Sort-Object LastActiveDt -Descending)
-        for ($i = 0; $i -lt $sorted.Count; $i++) { $Rows[$i] = $sorted[$i] }
+        if ($Rows -is [System.Collections.IList] -and -not $Rows.IsFixedSize) { $Rows.Clear(); $Rows.AddRange($sorted) } else { for ($i = 0; $i -lt $sorted.Count; $i++) { $Rows[$i] = $sorted[$i] } }
         foreach ($r in $Rows) { if ($r.RemoteUrl) { $ctx.Remote[$r.Path] = $r.RemoteUrl } else { [void]$ctx.Remote.Remove($r.Path) } }
+        # Forget checked paths and remote links of projects that no longer exist (deleted while the picker was open).
+        $live = @{}; foreach ($r in $Rows) { $live[[string]$r.Path] = $true }
+        foreach ($p in @($ctx.Checked)) { if (-not $live.ContainsKey([string]$p)) { [void]$ctx.Checked.Remove($p) } }
+        foreach ($k in @($ctx.Remote.Keys)) { if (-not $live.ContainsKey([string]$k)) { [void]$ctx.Remote.Remove($k) } }
         & $fill
-        $status.Text = '{0} open project(s); git state refreshed.' -f $ctx.Running.Count
+        $extra = ''; if ($res -and ($res.Added -or $res.Removed)) { $extra = " ($($res.Added) new, $($res.Removed) gone)" } elseif ($res -and $res.Skipped) { $extra = ' (folders not rescanned: the list was narrowed by a command-line switch)' }
+        $status.Text = '{0} open project(s); {1} project(s) refreshed{2}.' -f $ctx.Running.Count, @($Rows).Count, $extra
     }.GetNewClosure())
     $btnRefresh.Add_Click({
         & $refresh
         if ($ctx.FactsTask) { return }
         $task = $null
-        try { if ($OnFactsStart) { $task = & $OnFactsStart } } catch { $status.Text = "Could not refresh git state: $($_.Exception.Message)"; return }
+        try { if ($OnFactsStart) { $task = & $OnFactsStart } } catch { $status.Text = "Could not refresh: $($_.Exception.Message)"; return }
         if ($task) {
             $ctx.FactsTask = $task; $btnRefresh.Enabled = $false
-            $status.Text = 'Refreshing git state...'; $factsTimer.Start()
+            $status.Text = 'Refreshing projects...'; $factsTimer.Start()
         } else {
             $status.Text = '{0} open project(s) found. Git info is off (gitInfo in config.json), so only open tabs were refreshed.' -f $ctx.Running.Count
         }
@@ -2481,25 +2487,30 @@ if (-not $Roots.Count -and -not @($ExtraProjects | Where-Object { Test-Path -Lit
 if ($Picker -eq 'Forms' -and -not $List -and -not $All -and $Project.Count -eq 0 -and -not $DryRun) { Show-Splash }
 # Every subfolder of every project folder, plus the individual "projects" folders, de-duplicated by path. When two projects share a
 # folder name, later ones are labelled "name (parentfolder)" so tab titles, presets and saved layouts (all keyed by name) stay unique.
-$dirs = @()
-$seenPaths = @{}; $seenNames = @{}
-function Add-ProjectDir([string]$FullPath) {
-    $full = $FullPath.TrimEnd('\')
-    $leaf = Split-Path -Leaf $full
-    if (-not $leaf -or $leaf -like '.*' -or $Ignore -contains $leaf) { return }
-    $key = $full.ToLowerInvariant()
-    if ($seenPaths.ContainsKey($key)) { return }
-    $seenPaths[$key] = $true
-    $name = $leaf
-    if ($seenNames.ContainsKey($name.ToLowerInvariant())) {
-        $name = "$leaf ($(Split-Path -Leaf (Split-Path -Parent $full)))"
-        $n = 2; while ($seenNames.ContainsKey($name.ToLowerInvariant())) { $name = "$leaf ($(Split-Path -Leaf (Split-Path -Parent $full)) $n)"; $n++ }
+function Get-ProjectDirs {
+    $found = @()
+    $seenPaths = @{}; $seenNames = @{}
+    $candidates = @()
+    foreach ($r in $Roots) { foreach ($d in @(Get-ChildItem -LiteralPath $r -Directory -Force -ErrorAction SilentlyContinue)) { $candidates += $d.FullName } }
+    foreach ($p in $ExtraProjects) { if (Test-Path -LiteralPath $p -PathType Container) { $candidates += (Resolve-Path -LiteralPath $p).ProviderPath } }
+    foreach ($c in $candidates) {
+        $full = $c.TrimEnd('\')
+        $leaf = Split-Path -Leaf $full
+        if (-not $leaf -or $leaf -like '.*' -or $Ignore -contains $leaf) { continue }
+        $key = $full.ToLowerInvariant()
+        if ($seenPaths.ContainsKey($key)) { continue }
+        $seenPaths[$key] = $true
+        $name = $leaf
+        if ($seenNames.ContainsKey($name.ToLowerInvariant())) {
+            $name = "$leaf ($(Split-Path -Leaf (Split-Path -Parent $full)))"
+            $n = 2; while ($seenNames.ContainsKey($name.ToLowerInvariant())) { $name = "$leaf ($(Split-Path -Leaf (Split-Path -Parent $full)) $n)"; $n++ }
+        }
+        $seenNames[$name.ToLowerInvariant()] = $true
+        $found += [pscustomobject]@{ Name = $name; FullName = $full }
     }
-    $seenNames[$name.ToLowerInvariant()] = $true
-    $script:dirs += [pscustomobject]@{ Name = $name; FullName = $full }
+    $found
 }
-foreach ($r in $Roots) { foreach ($d in @(Get-ChildItem -LiteralPath $r -Directory -Force -ErrorAction SilentlyContinue)) { Add-ProjectDir $d.FullName } }
-foreach ($p in $ExtraProjects) { if (Test-Path -LiteralPath $p -PathType Container) { Add-ProjectDir (Resolve-Path -LiteralPath $p).ProviderPath } }
+$dirs = @(Get-ProjectDirs)
 
 function New-Row($d, [bool]$Scan, [bool]$Git, $Facts) {
     $la = $null; $gi = $null
@@ -2542,6 +2553,8 @@ $rows = @($dirs | ForEach-Object { New-Row $_ $true $needGit $facts } | Sort-Obj
 if ($Filter) { $rows = @($rows | Where-Object { $_.Name -like "*$Filter*" -or $_.Path -like "*$Filter*" }) }
 if ($Project.Count -gt 0) { $rows = @($rows | Where-Object { $Project -contains $_.Name -or $Project -contains $_.Path }) }
 if ($Top -gt 0 -and -not $All) { $rows = @($rows | Select-Object -First $Top) }
+$rescanAllowed = -not $Filter -and $Top -le 0 -and $Project.Count -eq 0   # Refresh may add/remove folders only when the list was not narrowed by switches
+$rows = [System.Collections.ArrayList]@($rows)   # a growing list: Refresh adds new project folders and drops vanished ones
 
 if ($List) {
     $running = @(Get-RunningNames)
@@ -2584,16 +2597,16 @@ if ($All) {
     $onCascade = { param($self) Invoke-CascadeFront ([int64]$self) }
     $actions = @{ About = { param($owner) Show-AboutDialog $owner }; LaunchOptions = { param($row, $owner) Invoke-PickerLaunchOptions $row $owner }; NewProject = { param($owner) Invoke-PickerNewProject $owner }; RenameProject = { param($row, $owner) Invoke-PickerRenameProject $row $owner }; ChooseRoot = { $p = @(Show-RootDialog { @(Find-ProjectRootCandidates) } 'Choose the folders that hold your projects.' @($Roots)); if ($p.Count) { Set-ProjectRoots $p }; [bool]$p.Count } }
     $onIde = { param($paths) Invoke-OpenIde ([string[]]$paths) }
-    # Refresh support: start Get-ProjectFacts for every listed row in a background runspace (returns $null when git info is off),
-    # then apply the finished result to the row objects in place. The folder list itself is not rescanned.
+    # Refresh support: rescan the project folders (new/removed projects), then start Get-ProjectFacts for every project in a background
+    # runspace and apply the finished result to the rows in place.
     $onFactsStart = {
-        if (-not $needGit) { return $null }
+        $script:RefreshDirs = @(Get-ProjectDirs)
         $fns = 'ConvertTo-RemoteWebUrl', 'Get-GitInfo', 'Get-LastActive', 'Get-ProjectFacts'
         $defs = ($fns | ForEach-Object { "function $_ {`n" + (Get-Item "function:$_").ScriptBlock.ToString() + "`n}" }) -join "`n"
-        $body = 'param($paths, $noise, $maxFiles, $maxDepth)' + "`n" + '$NoiseDirs = $noise; $MaxScanFiles = $maxFiles; $MaxScanDepth = $maxDepth' + "`n" + $defs + "`n" +
-            '$d = @($paths | ForEach-Object { [pscustomobject]@{ FullName = $_ } }); Get-ProjectFacts $d $true $true'
+        $body = 'param($paths, $noise, $maxFiles, $maxDepth, $git)' + "`n" + '$NoiseDirs = $noise; $MaxScanFiles = $maxFiles; $MaxScanDepth = $maxDepth' + "`n" + $defs + "`n" +
+            '$d = @($paths | ForEach-Object { [pscustomobject]@{ FullName = $_ } }); Get-ProjectFacts $d $true $git'
         $ps = [powershell]::Create()
-        [void]$ps.AddScript($body).AddArgument([string[]]@($rows | ForEach-Object { $_.Path })).AddArgument($NoiseDirs).AddArgument($MaxScanFiles).AddArgument($MaxScanDepth)
+        [void]$ps.AddScript($body).AddArgument([string[]]@($script:RefreshDirs | ForEach-Object { $_.FullName })).AddArgument($NoiseDirs).AddArgument($MaxScanFiles).AddArgument($MaxScanDepth).AddArgument([bool]$needGit)
         @{ PS = $ps; Handle = $ps.BeginInvoke() }
     }
     $onFactsDone = {
@@ -2601,6 +2614,25 @@ if ($All) {
         try { $out = @($task.PS.EndInvoke($task.Handle)) } finally { $task.PS.Dispose() }
         if (-not $out.Count -or $out[-1] -isnot [hashtable]) { throw 'the background check returned nothing' }
         $f = $out[-1]
+        $added = 0; $removed = 0
+        if ($rescanAllowed) {
+            $cur = @($script:RefreshDirs)
+            $curKeys = @{}; foreach ($d in $cur) { $curKeys[$d.FullName.ToLowerInvariant()] = $true }
+            for ($i = $rows.Count - 1; $i -ge 0; $i--) { if (-not $curKeys.ContainsKey(([string]$rows[$i].Path).TrimEnd('\').ToLowerInvariant())) { $rows.RemoveAt($i); $removed++ } }
+            $have = @{}; foreach ($r in $rows) { $have[([string]$r.Path).TrimEnd('\').ToLowerInvariant()] = $true }
+            $names = @{}; foreach ($r in $rows) { $names[([string]$r.Name).ToLowerInvariant()] = $true }
+            foreach ($d in $cur) {
+                if ($have.ContainsKey($d.FullName.ToLowerInvariant())) { continue }
+                # Keep names unique against the rows already listed (their names were fixed when the picker started).
+                $leaf = Split-Path -Leaf $d.FullName; $nm = $leaf
+                if ($names.ContainsKey($nm.ToLowerInvariant())) {
+                    $par = Split-Path -Leaf (Split-Path -Parent $d.FullName); $nm = "$leaf ($par)"
+                    $k = 2; while ($names.ContainsKey($nm.ToLowerInvariant())) { $nm = "$leaf ($par $k)"; $k++ }
+                }
+                $names[$nm.ToLowerInvariant()] = $true
+                [void]$rows.Add((New-Row ([pscustomobject]@{ Name = $nm; FullName = $d.FullName }) $true $needGit $f)); $added++
+            }
+        }
         foreach ($r in $rows) {
             if (-not $f.ContainsKey($r.Path)) { continue }
             $la = $f[$r.Path].La; $gi = $f[$r.Path].Gi
@@ -2611,6 +2643,7 @@ if ($All) {
             $r.HasHistory = Test-ClaudeHistory $r.Path
             $r.HasPreset = [bool](Get-Preset $r.Name)
         }
+        @{ Added = $added; Removed = $removed; Skipped = (-not $rescanAllowed) }
     }
     $update = @{
         Current = $AppVersion

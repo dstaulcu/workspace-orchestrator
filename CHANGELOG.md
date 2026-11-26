@@ -4,6 +4,11 @@ All notable changes to Workspace Wrangler. Newest first. The picker opens this f
 and offers it after an update. Add new entries under **Unreleased** as you work; rename that heading to the
 version when you release.
 
+## 1.5.1 - 2026-11-26
+
+### Fixed
+- **Refresh now rescans your project folders.** A project folder created (or deleted) while the picker is open used to be missing (or stale) until you restarted it; Refresh now adds new folders, drops vanished ones and says so in the status line (for example "1 new, 0 gone"). It skips this when the list was narrowed with `-Filter`, `-Top` or `-Project`.
+
 ## 1.5.0 - 2026-11-26
 
 ### Added
