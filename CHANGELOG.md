@@ -4,6 +4,18 @@ All notable changes to Workspace Wrangler. Newest first. The picker opens this f
 and offers it after an update. Add new entries under **Unreleased** as you work; rename that heading to the
 version when you release.
 
+## 1.3.0 - 2026-11-26
+
+### Changed
+- **File names no longer carry the product name**, so a fork can rebrand without renaming files: `Start-WorkspaceWrangler.ps1` is now `Start-App.ps1`, `Uninstall-WorkspaceWrangler.ps1` is `Uninstall-App.ps1`, the tools are `tools/New-AppIcon.ps1` and `tools/New-ArtAssets.ps1`, and the images are `assets/app.ico`, `app.png`, `concept.jpg`, `mark.png`, `splash.jpg` and `social-preview.jpg`.
+- Settings are copied once from `~\.config\workspace_wrangler` to `~\.config\workspace_app` the first time the picker starts (the old folder is left in place as a backup; `-List`, `-DryRun` and the other switches read it in place). `Install-Shortcut.ps1` re-points existing shortcuts at `Start-App.ps1` and gives them the new icon.
+- Small `Start-WorkspaceWrangler.ps1` and `Uninstall-WorkspaceWrangler.ps1` stubs remain and forward to `Start-App.ps1` / `Uninstall-App.ps1`, so shortcuts, in-place updates and old habits from 1.2.x and earlier keep working. They will be removed in v2.
+- `Uninstall-App.ps1` now matches only this folder's scripts when stopping pickers and deleting shortcuts, so an unrelated `Start-App.ps1` elsewhere is never touched.
+- The app icon is redrawn in the concept art's palette (night sky, sunset glow, neon cyan, cyan visor). Small sizes (16 to 48 px) are drawn natively with bolder shapes instead of shrunk from the large drawing, and 20 and 40 px sizes were added for 125% display scaling, so the title bar and taskbar are crisp.
+
+### Added
+- **Branding:** concept art on the README, a **startup splash** shown while your projects are scanned, a rider mark in the first-run folder dialog, a redrawn app icon in the same night-sky/neon palette as the art, and an **About** box (Help links, or Settings > About Workspace Wrangler...) with the full art, version and links. The image prompt is kept in `docs/concept-art.md` as the baseline for future variations; `tools/New-ArtAssets.ps1` makes the smaller derived images.
+
 ## 1.2.2 - 2026-11-26
 
 ### Changed

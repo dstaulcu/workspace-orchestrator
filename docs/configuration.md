@@ -12,7 +12,7 @@ flowchart LR
 
 Precedence: command-line switch > per-project preset > `config.json`.
 
-All three files live in `~\.config\workspace_wrangler\` (outside the repo, so updates never touch them; files from older versions next to the script are moved there on first run). Open `config.json` or `presets.json` from the picker with the **Settings** button, which creates them from [`config.example.json`](../config.example.json) / [`presets.example.json`](../presets.example.json) if missing. Changes apply the next time the picker starts. Both files have JSON schemas ([`config.schema.json`](../config.schema.json), [`presets.schema.json`](../presets.schema.json)) (`config.example.json` already references its schema; for `presets.json` map `presets.schema.json` in your editor's JSON settings) so editors like VS Code give hover help and validation.
+All three files live in `~\.config\workspace_app\` (outside the repo, so updates never touch them; files from older versions next to the script are moved there on first run). Open `config.json` or `presets.json` from the picker with the **Settings** button, which creates them from [`config.example.json`](../config.example.json) / [`presets.example.json`](../presets.example.json) if missing. Changes apply the next time the picker starts. Both files have JSON schemas ([`config.schema.json`](../config.schema.json), [`presets.schema.json`](../presets.schema.json)) (`config.example.json` already references its schema; for `presets.json` map `presets.schema.json` in your editor's JSON settings) so editors like VS Code give hover help and validation.
 
 ## `config.json`
 

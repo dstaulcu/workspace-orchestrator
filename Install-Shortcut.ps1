@@ -31,7 +31,7 @@ if (-not $SkipPrereqCheck) {
     }
 }
 
-$script = Join-Path $PSScriptRoot 'Start-WorkspaceWrangler.ps1'
+$script = Join-Path $PSScriptRoot 'Start-App.ps1'
 $psArgs = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$script`""
 if ($Project) { $psArgs += " -Project `"$Project`"" }
 
@@ -41,18 +41,19 @@ $lnk = $sh.CreateShortcut((Join-Path $Folder "$Name.lnk"))
 $lnk.TargetPath = 'powershell.exe'
 $lnk.Arguments = $psArgs
 $lnk.WorkingDirectory = $PSScriptRoot
-$ico = Join-Path $PSScriptRoot 'assets\wrangler.ico'
+$ico = Join-Path $PSScriptRoot 'assets\app.ico'
 if (Test-Path -LiteralPath $ico) { $lnk.IconLocation = "$ico,0" } elseif ($wt) { $lnk.IconLocation = "$wt,0" }
 $lnk.Save()
 
-# Retarget shortcuts left over from the old script name (Start-WorkspaceOrchestrator.ps1), so they keep working.
+# Retarget shortcuts left over from earlier script names (Start-WorkspaceOrchestrator.ps1, Start-WorkspaceWrangler.ps1), so they keep working.
 # Also drop the old "Workspace Picker.lnk" (only if it is ours, and never the one just saved).
 foreach ($f in @(Get-ChildItem -LiteralPath $Folder -Filter '*.lnk' -ErrorAction SilentlyContinue)) {
     if ($f.FullName -ieq $lnk.FullName) { continue }
     try { $old = $sh.CreateShortcut($f.FullName) } catch { continue }
-    if ($old.Arguments -notmatch 'Start-WorkspaceOrchestrator\.ps1') { continue }
-    if ($f.Name -eq 'Workspace Picker.lnk' -and -not $Project) { Remove-Item -LiteralPath $f.FullName; Write-Output "Removed old shortcut $($f.FullName)"; continue }
-    $old.Arguments = $old.Arguments -replace 'Start-WorkspaceOrchestrator\.ps1', 'Start-WorkspaceWrangler.ps1'
+    if ($old.Arguments -notmatch 'Start-Workspace(Orchestrator|Wrangler)\.ps1') { continue }
+    if ($f.Name -eq 'Workspace Picker.lnk' -and -not $Project -and $old.Arguments -match 'Start-WorkspaceOrchestrator\.ps1') { Remove-Item -LiteralPath $f.FullName; Write-Output "Removed old shortcut $($f.FullName)"; continue }
+    $old.Arguments = $old.Arguments -replace 'Start-Workspace(Orchestrator|Wrangler)\.ps1', 'Start-App.ps1'
+    if (Test-Path -LiteralPath $ico) { $old.IconLocation = "$ico,0" }   # the old wrangler.ico no longer exists
     $old.Save(); Write-Output "Updated old shortcut $($f.FullName)"
 }
 Write-Output "Created $($lnk.FullName)"

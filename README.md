@@ -1,4 +1,4 @@
-<p align="center"><img src="assets/wrangler.png" alt="Workspace Wrangler: a cowboy hat" width="160"></p>
+<p align="center"><img src="assets/concept.jpg" alt="Workspace Wrangler: a cowboy on a robot bronco lassoing notification bells, chat bubbles and browser windows" width="760"></p>
 
 # Workspace Wrangler
 
@@ -25,8 +25,8 @@ A small picker that lists your project folders (newest activity first) and opens
    This puts one **Workspace Wrangler** shortcut on your Desktop.
 3. Double-click **Workspace Wrangler**. Each subfolder of your projects folder is a project. If the default, `C:\code`, doesn't exist or is empty, the picker asks where your projects live: it suggests the folders your tools already use (where you opened projects in Claude Code or VS Code, found by reading their local history files; nothing is sent anywhere) and common ones such as `~\source\repos` or `~\src`, or you can **Browse...** to any folder, and it remembers the answer. Change it later under **Settings > Change projects folder...**.
 
-To try it without installing: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Start-WorkspaceWrangler.ps1`.
-**Update:** the picker offers new releases itself (see below). **Uninstall:** `.\Uninstall-WorkspaceWrangler.ps1` (add `-WhatIf` to preview, `-RemoveSettings` to also delete settings).
+To try it without installing: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Start-App.ps1`.
+**Update:** the picker offers new releases itself (see below). **Uninstall:** `.\Uninstall-App.ps1` (add `-WhatIf` to preview, `-RemoveSettings` to also delete settings).
 
 ## Using the picker
 
@@ -61,7 +61,7 @@ On startup the picker checks GitHub **releases** (at most daily, without slowing
 Handy for per-project shortcuts and quick checks (no picker; open projects are focused instead of launched again):
 
 ```powershell
-$s = '.\Start-WorkspaceWrangler.ps1'
+$s = '.\Start-App.ps1'
 powershell.exe -NoProfile -File $s -Project a,b          # launch these projects
 powershell.exe -NoProfile -File $s -Project a,b -DryRun  # print the wt command instead
 powershell.exe -NoProfile -File $s -Focus a              # raise a's open tab
@@ -73,7 +73,7 @@ Also: `-All -Top N`, `-Root`, `-Filter`, `-Fresh`, `-NoShell`, `-NoDiff`, `-NoCo
 
 ## Configuration
 
-Settings live outside the repo in `~\.config\workspace_wrangler\` (`config.json` global defaults, `presets.json` per-project tabs and arguments, `state.json` and `layouts.json` written for you), so updates never touch them. Precedence: command-line switch > per-project preset > `config.json`. Full reference with every key: **[docs/configuration.md](docs/configuration.md)**; JSON schemas give editors hover help.
+Settings live outside the repo in `~\.config\workspace_app\` (`config.json` global defaults, `presets.json` per-project tabs and arguments, `state.json` and `layouts.json` written for you), so updates never touch them. Precedence: command-line switch > per-project preset > `config.json`. Full reference with every key: **[docs/configuration.md](docs/configuration.md)**; JSON schemas give editors hover help.
 
 ## Safety
 
