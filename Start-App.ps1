@@ -57,7 +57,7 @@ param(
 )
 
 # ---------------------------------------------------------------- config / state
-$AppVersion = '1.5.1'   # bump on every release; the update check compares it with the latest GitHub release tag
+$AppVersion = '1.6.0'   # bump on every release; the update check compares it with the latest GitHub release tag
 $cfg = @{
     root = 'C:\code'; roots = @(); projects = @(); top = 0; ignore = @()
     noiseDirs = @('.git','node_modules','.venv','venv','__pycache__','dist','build','.next','bin','obj','.idea','.vscode')
@@ -1189,7 +1189,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
     $stateBox.DropDownStyle = 'DropDownList'; $stateBox.Location = New-Object System.Drawing.Point(308, 12); $stateBox.Width = 124
     [void]$stateBox.Items.AddRange(@('All projects', 'Dirty (uncommitted)', 'Clean', 'Open in terminal', 'Not open', 'Not a git repo')); $stateBox.SelectedIndex = 0
     $hint = New-Object System.Windows.Forms.Label
-    $hint.Text = 'Check projects and Launch, or highlight an open (green) project and Switch to bring it forward.'
+    $hint.Text = 'Tick or Ctrl/Shift-click projects, then Launch or Switch.'
     $hint.Location = New-Object System.Drawing.Point(546, 16); $hint.AutoSize = $true
 
     $lv = New-Object System.Windows.Forms.ListView
@@ -1206,7 +1206,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
     # ListView column headers have no built-in tooltips, so hit-test the mouse against the header strip.
     $colHelp = @(
         "Project: folder name under the root.`nGreen row = already open in a terminal.",
-        "Open: $([char]0x25CF) means a cc:<project> or sh:<project> tab is open in some Windows Terminal window.`nHighlight the row and click Switch to bring it forward.",
+        "Open: $([char]0x25CF) means a cc:<project> or sh:<project> tab is open in some Windows Terminal window.`nSelect the row and click Switch to bring it forward.",
         "Last active: how long ago the project's latest git commit was`n(or its newest file change if it isn't a git repo).",
         "When: exact date and time of that last activity.",
         "Path: full folder path of the project.",
@@ -1357,22 +1357,39 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
     $ctrlTip = New-Object System.Windows.Forms.ToolTip
     $ctrlTip.InitialDelay = 400; $ctrlTip.AutoPopDelay = 12000
     $ctrlTip.SetToolTip($btnNew, 'Create a new project folder in your projects folder: optionally run git init, add a README and open it in your IDE. The list reloads with it pre-checked.')
-    $ctrlTip.SetToolTip($filterBox, 'Type to narrow the list by project name, path or branch. Checked projects stay checked while you filter.')
+    $ctrlTip.SetToolTip($filterBox, 'Type to narrow the list by project name, path or branch. Selected projects stay selected while you filter.')
     $ctrlTip.SetToolTip($stateBox, 'Show only projects in a given state: dirty (uncommitted changes), clean, open in a terminal, not open, or not a git repo. Combines with the text filter. Click a column header to sort.')
     $ctrlTip.SetToolTip($btnSettings, 'Edit config.json (global defaults) or presets.json (per-project overrides) in your default editor (changes apply the next time the picker starts), or save the positions of your open project windows so Launch restores them.')
-    $ctrlTip.SetToolTip($btnIde, 'Open the checked and the highlighted projects in your IDE, one new window per project. Visual Studio Code by default; set "ide" (and "ideArgs") in config.json to use another.')
-    $ctrlTip.SetToolTip($btnGit, 'Git actions for the highlighted project: open its repository in your browser, initialize a local git repository, or create a new GitHub repository (in an organization you pick) and add it as origin. Also on the right-click menu of a row.')
+    $ctrlTip.SetToolTip($btnIde, 'Open the selected projects in your IDE, one new window per project. Visual Studio Code by default; set "ide" (and "ideArgs") in config.json to use another.')
+    $ctrlTip.SetToolTip($btnGit, 'Git actions for the selected project: open its repository in your browser, initialize a local git repository, or create a new GitHub repository (in an organization you pick) and add it as origin. Also on the right-click menu of a row.')
     $ctrlTip.SetToolTip($btnArrange, 'Arrange the windows of all open projects now. Choose cascade, grid, side by side or stacked, or reset windows to the default size. Windows with a saved spot (Settings > Save window layout) go there; hold Shift while choosing to ignore saved spots.')
     $ctrlTip.SetToolTip($btnRefresh, 'Re-check which projects have tabs open in Windows Terminal and re-read each project''s git branch, clean/dirty state, remote and last-activity time.')
-    $ctrlTip.SetToolTip($btnSwitch, 'Bring the highlighted project''s open tab and its terminal window to the foreground. Works for projects marked open.')
-    $ctrlTip.SetToolTip($btnGo, 'Open the checked projects (or the highlighted one), each in its own new Windows Terminal window with a Claude Code tab and a shell tab. Projects already open are brought to the front instead; hold Shift while clicking to open a new copy anyway.')
+    $ctrlTip.SetToolTip($btnSwitch, 'Bring the selected project''s open tab and its terminal window to the foreground (the first one if several are selected). Works for projects marked open.')
+    $ctrlTip.SetToolTip($btnGo, 'Open the selected projects, each in its own new Windows Terminal window with a Claude Code tab and a shell tab. Projects already open are brought to the front instead; hold Shift while clicking to open a new copy anyway.')
     $ctrlTip.SetToolTip($btnClose, 'Close the picker without launching anything.')
     $ctrlTip.SetToolTip($help, 'Open this project on GitHub, its open issues, or the new-issue page.')
     $ctrlTip.SetToolTip($updLink, "What's new: read the release notes.  Update now: install the new version in place (settings are kept) and restart the picker.  Skip this version: hide this notice until a newer release appears.")
 
     $green = [System.Drawing.Color]::FromArgb(222, 245, 226)
 
-    # Rebuild the list (newest activity first); keeps checked + highlighted rows.
+    # One selection, shown two ways: a row is selected exactly when its box is ticked ($ctx.Checked is the single source of truth, so
+    # it also survives filtering and sorting). Ticking highlights the row; Ctrl/Shift-clicking rows ticks them. Every action uses this set.
+    $setSelection = {
+        param($paths)
+        $want = New-Object 'System.Collections.Generic.HashSet[string]'
+        foreach ($p in @($paths)) { if ($p) { [void]$want.Add([string]$p) } }
+        $ctx.Checked.Clear(); foreach ($p in $want) { [void]$ctx.Checked.Add($p) }
+        $ctx.Syncing = $true
+        try { foreach ($i in $lv.Items) { $on = $want.Contains([string]$i.Tag); $i.Checked = $on; $i.Selected = $on } } finally { $ctx.Syncing = $false }
+    }.GetNewClosure()
+    $showSel = {
+        $vis = 0; foreach ($i in $lv.Items) { if ($i.Checked) { $vis++ } }
+        $hid = $ctx.Checked.Count - $vis
+        $t = '{0} selected' -f $ctx.Checked.Count; if ($hid -gt 0) { $t += " ($hid hidden by the filter)" }
+        $status.Text = $t + '.'
+    }.GetNewClosure()
+
+    # Rebuild the list (newest activity first); keeps the selection.
     $fill = {
         $ctx.Rebuilding = $true
         $sel = @($lv.SelectedItems | ForEach-Object { [string]$_.Tag })
@@ -1419,7 +1436,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
             }
             $it.Checked = $ctx.Checked.Contains($r.Path)
             [void]$lv.Items.Add($it)
-            if ($sel -contains $r.Path) { $it.Selected = $true }
+            if ($ctx.Checked.Contains([string]$r.Path)) { $it.Selected = $true }
         }
         $lv.EndUpdate()
         $ctx.Rebuilding = $false
@@ -1465,8 +1482,32 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
 
     $lv.Add_ItemChecked({
         param($s, $e)
-        if ($ctx.Rebuilding) { return }
+        if ($ctx.Rebuilding -or $ctx.Syncing) { return }
         if ($e.Item.Checked) { [void]$ctx.Checked.Add([string]$e.Item.Tag) } else { [void]$ctx.Checked.Remove([string]$e.Item.Tag) }
+        $ctx.Syncing = $true; try { $e.Item.Selected = $e.Item.Checked } finally { $ctx.Syncing = $false }   # ticking highlights the row
+        & $showSel
+    }.GetNewClosure())
+    $lv.Add_ItemSelectionChanged({
+        param($s, $e)
+        if ($ctx.Rebuilding -or $ctx.Syncing) { return }
+        if ($e.IsSelected) { [void]$ctx.Checked.Add([string]$e.Item.Tag) } else { [void]$ctx.Checked.Remove([string]$e.Item.Tag) }
+        $ctx.Syncing = $true; try { $e.Item.Checked = $e.IsSelected } finally { $ctx.Syncing = $false }   # highlighting ticks the row
+        & $showSel
+    }.GetNewClosure())
+    # Right-click acts on the selection: on an unselected row it first selects just that row; on empty space it clears the selection.
+    $lv.Add_MouseDown({
+        param($s, $e)
+        if ($e.Button -ne [System.Windows.Forms.MouseButtons]::Right) { return }
+        $hit = $lv.HitTest($e.X, $e.Y)
+        if ($hit.Item) { if (-not $ctx.Checked.Contains([string]$hit.Item.Tag)) { & $setSelection @([string]$hit.Item.Tag); & $showSel } }
+        else { & $setSelection @(); & $showSel }
+    }.GetNewClosure())
+    # Ctrl+A selects every project shown (anything already selected but hidden by the filter stays selected).
+    $lv.Add_KeyDown({
+        param($s, $e)
+        if ($e.Control -and $e.KeyCode -eq [System.Windows.Forms.Keys]::A) {
+            & $setSelection (@($ctx.Checked) + @($lv.Items | ForEach-Object { [string]$_.Tag })); & $showSel; $e.SuppressKeyPress = $true
+        }
     }.GetNewClosure())
     $filterBox.Add_TextChanged({ & $fill }.GetNewClosure())
     $stateBox.Add_SelectedIndexChanged({ & $fill; $status.Text = '{0} of {1} project(s) shown.' -f $lv.Items.Count, @($Rows).Count }.GetNewClosure())
@@ -1548,14 +1589,15 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
     $gitMenu = New-Object System.Windows.Forms.ContextMenuStrip
     $ctx.GitTargets = @(Get-GitTargets)
     $ctx.GitRow = {
-        if ($lv.SelectedItems.Count -eq 0) { return $null }
-        $path = [string]$lv.SelectedItems[0].Tag
+        $path = ''
+        if ($lv.SelectedItems.Count -gt 0) { $path = [string]$lv.SelectedItems[0].Tag } elseif ($ctx.Checked.Count -gt 0) { $path = [string]@($ctx.Checked)[0] }
+        if (-not $path) { return $null }
         $Rows | Where-Object { $_.Path -eq $path } | Select-Object -First 1
     }.GetNewClosure()
     $runGit = {
         param($op, $owner)
         $row = & $ctx.GitRow
-        if (-not $row) { $status.Text = 'Highlight a project first.'; return }
+        if (-not $row) { $status.Text = 'Select a project first.'; return }
         try { $status.Text = [string](& $OnGitOp $op $row $form $owner) } catch { $status.Text = "Git action failed: $_" }
         if ($row.RemoteUrl) { $ctx.Remote[$row.Path] = $row.RemoteUrl }
         & $fill
@@ -1581,7 +1623,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
         [void]$items.Add($mRemote)
         $mUrl = $items.Add('Add existing remote URL...')
         if (-not $row) {
-            foreach ($mi in @($mOpen, $mInit, $mRemote, $mUrl)) { $mi.Enabled = $false; $mi.ToolTipText = 'Highlight a project first.' }
+            foreach ($mi in @($mOpen, $mInit, $mRemote, $mUrl)) { $mi.Enabled = $false; $mi.ToolTipText = 'Select a project first.' }
             return
         }
         $mOpen.Enabled = [bool]$row.RemoteUrl
@@ -1622,7 +1664,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
     $ctx.ClaudeVariants = @($cfg.claudeVariants | Where-Object { $_ -and $_.name -and $_.args })
     $ctx.IdeName = [string]$cfg.ide; if (-not $ctx.IdeName) { $ctx.IdeName = 'code' }
     $selRows = {
-        @($lv.SelectedItems | ForEach-Object { $p = [string]$_.Tag; $Rows | Where-Object { $_.Path -eq $p } | Select-Object -First 1 } | Where-Object { $_ })
+        @($Rows | Where-Object { $ctx.Checked.Contains([string]$_.Path) })
     }.GetNewClosure()
     $doLaunch = {
         param($mode, $fresh, $force, $session, $extra)
@@ -1679,7 +1721,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
             $np.Tag = @{ Fn = $actNewProject; A = @() }; $np.Add_Click($menuClick)
             return
         }
-        $title = $(if ($sel.Count -eq 1) { $sel[0].Name } else { "$($sel.Count) highlighted projects" })
+        $title = $(if ($sel.Count -eq 1) { $sel[0].Name } else { "$($sel.Count) selected projects" })
         $hdr = $s.Items.Add($title); $hdr.Enabled = $false
         [void]$s.Items.Add('-')
         # Launch >
@@ -1724,7 +1766,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
         }
         # IDE >
         $mI = New-Object System.Windows.Forms.ToolStripMenuItem 'IDE'; [void]$s.Items.Add($mI)
-        $it = $mI.DropDownItems.Add("Open in $($ctx.IdeName)"); $it.ToolTipText = 'Open the highlighted project(s) in your IDE, one new window each (config "ide").'
+        $it = $mI.DropDownItems.Add("Open in $($ctx.IdeName)"); $it.ToolTipText = 'Open the selected project(s) in your IDE, one new window each (config "ide").'
         $it.Tag = @{ Fn = $actIde; A = @() }; $it.Add_Click($menuClick)
         $it = $mI.DropDownItems.Add('Open folder in File Explorer'); $it.ToolTipText = 'Show the project folder in Windows File Explorer.'
         $it.Tag = @{ Fn = $actExplorer; A = @() }; $it.Add_Click($menuClick)
@@ -1736,10 +1778,10 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
         $mG.Add_DropDownOpening($gitDropOpen)
         [void]$s.Items.Add('-')
         $lo = $s.Items.Add('Launch options...'); $lo.ToolTipText = 'Customize how this project launches: Claude arguments, shell tab and startup command, URLs to open, tab color. Saved to presets.json.'
-        $lo.Enabled = ($sel.Count -eq 1); if ($sel.Count -ne 1) { $lo.ToolTipText = 'Highlight a single project to edit its launch options.' }
+        $lo.Enabled = ($sel.Count -eq 1); if ($sel.Count -ne 1) { $lo.ToolTipText = 'Select a single project to edit its launch options.' }
         $lo.Tag = @{ Fn = $actLaunchOpts; A = @() }; $lo.Add_Click($menuClick)
         $rn = $s.Items.Add('Rename project...'); $rn.ToolTipText = 'Rename the project folder and carry its Claude history, preset and window position along. Close its terminal tabs first.'
-        $rn.Enabled = ($sel.Count -eq 1); if ($sel.Count -ne 1) { $rn.ToolTipText = 'Highlight a single project to rename it.' }
+        $rn.Enabled = ($sel.Count -eq 1); if ($sel.Count -ne 1) { $rn.ToolTipText = 'Select a single project to rename it.' }
         $rn.Tag = @{ Fn = $actRename; A = @() }; $rn.Add_Click($menuClick)
     }.GetNewClosure())
     $lv.ContextMenuStrip = $rowMenu
@@ -1791,8 +1833,9 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
     }.GetNewClosure())
     $btnSettings.Add_Click({ $menu.Show($btnSettings, (New-Object System.Drawing.Point(0, $btnSettings.Height))) }.GetNewClosure())
     $btnSwitch.Add_Click({
-        if ($lv.SelectedItems.Count -eq 0) { $status.Text = 'Highlight a project first, then Switch.'; return }
-        $path = [string]$lv.SelectedItems[0].Tag
+        $path = ''
+        if ($lv.SelectedItems.Count -gt 0) { $path = [string]$lv.SelectedItems[0].Tag } elseif ($ctx.Checked.Count -gt 0) { $path = [string]@($ctx.Checked)[0] }
+        if (-not $path) { $status.Text = 'Select a project first, then Switch.'; return }
         $name = ($Rows | Where-Object { $_.Path -eq $path } | Select-Object -First 1).Name
         if (& $OnSwitch $name) {
             $status.Text = "Switched to $name."
@@ -1801,14 +1844,12 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
         }
     }.GetNewClosure())
     $btnIde.Add_Click({
-        # Everything checked AND everything highlighted (a highlighted row doesn't need its checkbox ticked).
-        $paths = @(@($ctx.Checked) + @($lv.SelectedItems | ForEach-Object { [string]$_.Tag }) | Where-Object { $_ } | Select-Object -Unique)
-        if ($paths.Count -eq 0) { $status.Text = 'Check or highlight a project first, then IDE.'; return }
+        $paths = @($ctx.Checked)
+        if ($paths.Count -eq 0) { $status.Text = 'Select a project first, then IDE.'; return }
         try { $status.Text = [string](& $OnIde $paths) } catch { $status.Text = "Could not open the IDE: $_" }
     }.GetNewClosure())
     $btnGo.Add_Click({
-        if ($ctx.Checked.Count -eq 0) { foreach ($i in $lv.SelectedItems) { [void]$ctx.Checked.Add([string]$i.Tag) } }
-        if ($ctx.Checked.Count -eq 0) { $status.Text = 'Check at least one project to launch.'; return }
+        if ($ctx.Checked.Count -eq 0) { $status.Text = 'Select at least one project to launch.'; return }
         $paths = @($ctx.Checked)
         $force = [bool]([System.Windows.Forms.Control]::ModifierKeys -band [System.Windows.Forms.Keys]::Shift)   # Shift+Launch = open a new copy even if already open
         & $OnLaunch $paths $false $force
@@ -1844,7 +1885,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
                 }.GetNewClosure())
                 # Make the hotkey discoverable in the app itself.
                 $hotText = [string]$cfg.hotkey
-                $hint.Text = "Launch checked projects, or highlight an open (green) one and Switch.  Hotkey: $hotText cascades all workspaces."
+                $hint.Text = "Tick or Ctrl/Shift-click projects, then Launch or Switch.  Hotkey: $hotText cascades all workspaces."
                 if ($ctx.CascadeItem) { $ctx.CascadeItem.ShortcutKeyDisplayString = $hotText }
                 $ctrlTip.SetToolTip($btnArrange, ($ctrlTip.GetToolTip($btnArrange) + " Hotkey $hotText cascades all open workspaces from anywhere and brings this window up on top (works while the picker is open)."))
             } else { $hk = $null; $ctx.HotkeyNote = "Hotkey $($cfg.hotkey) is already used by another program." }

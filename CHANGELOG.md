@@ -4,6 +4,11 @@ All notable changes to Workspace Wrangler. Newest first. The picker opens this f
 and offers it after an update. Add new entries under **Unreleased** as you work; rename that heading to the
 version when you release.
 
+## 1.6.0 - 2026-11-26
+
+### Changed
+- **One selection instead of two.** Ticking a box and highlighting a row used to be separate (Launch used the ticked rows; Switch, IDE, Git and the right-click menu used the highlighted ones). They are now the same selection: ticking a box highlights the row, and Ctrl-clicking, Shift-clicking or Ctrl+A selecting rows ticks them. Every button and the right-click menu act on that one set, it survives filtering and sorting (the status line says how many selected rows the filter is hiding), and right-clicking an unselected row selects just that row first. The hint line and tooltips now teach Ctrl/Shift.
+
 ## 1.5.1 - 2026-11-26
 
 ### Fixed

@@ -40,16 +40,16 @@ To try it without installing: `powershell.exe -NoProfile -ExecutionPolicy Bypass
 
 ## Using the picker
 
-Check projects and press **Launch** (or Enter). Type in the filter box to narrow the list by name, path or branch, use the dropdown beside it to show only dirty, clean, open, not-open or non-git projects, and click a column header to sort.
+Select projects by ticking their boxes, or by Ctrl-clicking and Shift-clicking rows (Ctrl+A selects everything shown): ticking and highlighting are the same selection, and it stays selected while you filter. Then press **Launch** (or Enter). Type in the filter box to narrow the list by name, path or branch, use the dropdown beside it to show only dirty, clean, open, not-open or non-git projects, and click a column header to sort.
 
 | Button | What it does |
 |---|---|
-| **Launch** | Open checked (or highlighted) projects, one window each. Already-open projects are raised instead; **Shift** forces a new copy. |
-| **Switch** | Bring the highlighted project's open tab and window to the front. |
+| **Launch** | Open the selected projects, one window each. Already-open projects are raised instead; **Shift** forces a new copy. |
+| **Switch** | Bring the selected project's open tab and window to the front (the first one if several are selected). |
 | **Refresh** | Re-detect open projects, re-read each project's git state and last activity, and pick up project folders you created or deleted since the picker started (the open-project check also runs automatically every `refreshSeconds`). Folders are not rescanned when the list was narrowed with `-Filter`, `-Top` or `-Project`. |
 | **Arrange** | Cascade, grid, side by side, stacked, reset size. **Shift** ignores saved spots. |
 | **Git** | Open the repo in a browser, `git init`, create a remote (GitHub / GitLab / Azure DevOps submenus) or add an existing remote URL. Also on the right-click menu. |
-| **IDE** | Open every checked and highlighted project in your IDE, one window each (`ide`, default `code`). |
+| **IDE** | Open every selected project in your IDE, one window each (`ide`, default `code`). |
 | **Settings** | Edit `config.json` / `presets.json`, save window layout, check for updates, open the changelog. |
 
 **Right-click a project** for finer control: **Launch** (Claude + shell, Claude only, shell only, a **Claude session** choice of continue / pick one to resume with `--resume` / fresh, or a new window even if already open), **Switch** (to its Claude tab or its shell tab), **IDE** (open in your IDE, open the folder in File Explorer, copy the path), **Git**, **Launch options...** and **Rename project...**. Launch, Switch and IDE act on the highlighted projects; Git, Launch options and Rename act on the first one. **Launch options...** edits that project's entry in `presets.json` without hand-editing JSON: its Claude arguments, whether it gets a shell tab and git summary, a **startup command** for the shell tab (such as `npm run dev`), **URLs** to open in your browser each time it launches, and its tab color. Extra tabs and extra applications stay in `presets.json` (a button in the dialog opens it). Add your own Claude variants (for example plan mode) with `claudeVariants` in `config.json`.
