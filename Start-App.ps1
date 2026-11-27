@@ -58,6 +58,7 @@ param(
 
 # ---------------------------------------------------------------- config / state
 $AppVersion = '1.9.0'   # bump on every release; the update check compares it with the latest GitHub release tag
+$AppName = 'Workspace Wrangler'   # display name; a rebranded fork changes it here (older strings still name it directly)
 $cfg = @{
     root = 'C:\code'; roots = @(); projects = @(); top = 0; ignore = @()
     noiseDirs = @('.git','node_modules','.venv','venv','__pycache__','dist','build','.next','bin','obj','.idea','.vscode')
@@ -2174,10 +2175,13 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
     # Help area: links back to the GitHub repo and its issue pages.
     $repoUrl = 'https://github.com/dstaulcu/workspace-wrangler'
     $help = New-Object System.Windows.Forms.LinkLabel
-    $help.Text = 'Help:  Repository  |  Open issues  |  Report a bug or request a feature  |  About'
-    $help.AutoSize = $true; $help.Location = New-Object System.Drawing.Point(670, 552); $help.Anchor = 'Bottom,Right'
+    # Named for the app so it doesn't read as help for the selected project.
+    $helpPrefix = "$AppName help:  "
+    $help.Text = $helpPrefix + 'Repository  |  Open issues  |  Report a bug or request a feature  |  About'
+    $help.AutoSize = $true; $help.Anchor = 'Bottom,Right'
+    $help.Location = New-Object System.Drawing.Point([Math]::Max(300, $form.ClientSize.Width - 12 - $help.PreferredWidth), 552)
     foreach ($l in @(@('Repository', $repoUrl), @('Open issues', "$repoUrl/issues"), @('Report a bug or request a feature', "$repoUrl/issues/new/choose"), @('About', 'about'))) {
-        [void]$help.Links.Add($help.Text.IndexOf($l[0]), $l[0].Length, $l[1])
+        [void]$help.Links.Add($help.Text.IndexOf($l[0], $helpPrefix.Length), $l[0].Length, $l[1])
     }
     $help.Add_LinkClicked({
         param($s, $e)

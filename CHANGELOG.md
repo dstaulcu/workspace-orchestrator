@@ -11,6 +11,9 @@ version when you release.
 - **Clear the filter** with the new **x** button beside the Filter box, or press Esc in the box (Esc in an empty box still closes the picker).
 - **Settings > Theme** (Match Windows, Light, Dark), saved as the new `theme` setting in `config.json` (`system`, `light` or `dark`; default `system`). High contrast mode always wins over dark.
 
+### Changed
+- The help links at the bottom of the picker are labeled with the app's name ("Workspace Wrangler help:") so they don't read as help for the selected project.
+
 ### Fixed
 - **Launch options** no longer logs an error when a project has no fixed tab color; the color swatch now shows the dialog's background in that case.
 
