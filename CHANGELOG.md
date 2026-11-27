@@ -4,6 +4,12 @@ All notable changes to Workspace Wrangler. Newest first. The picker opens this f
 and offers it after an update. Add new entries under **Unreleased** as you work; rename that heading to the
 version when you release.
 
+## 1.8.1 - 2026-11-27
+
+### Changed
+- **Rename branch to main is now local-only and refuses when `origin` already has branches.** It no longer pushes anything. The host owns the default branch, pull request targets and branch protection, and pushing a second `main` next to an existing `master` splits the history. When `origin` has branches (or cannot be reached) it changes nothing and shows the safe sequence instead: rename the branch on the host (GitHub: Settings > Branches), then `git fetch origin --prune`, `git branch -m <old> main`, `git branch -u origin/main main`, `git remote set-head origin -a`. With no remote, or an empty one, it renames the local branch as before.
+- **Create remote repository** warns, in the dialog summary, when the local branch is `master` (it becomes the host's default branch), and points to the rename item.
+
 ## 1.8.0 - 2026-11-27
 
 ### Added

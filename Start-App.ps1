@@ -57,7 +57,7 @@ param(
 )
 
 # ---------------------------------------------------------------- config / state
-$AppVersion = '1.8.0'   # bump on every release; the update check compares it with the latest GitHub release tag
+$AppVersion = '1.8.1'   # bump on every release; the update check compares it with the latest GitHub release tag
 $cfg = @{
     root = 'C:\code'; roots = @(); projects = @(); top = 0; ignore = @()
     noiseDirs = @('.git','node_modules','.venv','venv','__pycache__','dist','build','.next','bin','obj','.idea','.vscode')
@@ -842,8 +842,17 @@ function Get-RenameMainPlan([string]$Dir) {
     & git -C $Dir rev-parse --verify --quiet HEAD 2>$null | Out-Null
     $p.HasCommits = ($LASTEXITCODE -eq 0)
     $p.Origin = "$(& git -C $Dir remote get-url origin 2>$null)".Trim()
+    if ($p.Origin) {
+        # The host owns its default branch, so a local-only rename is safe only while origin has no branches yet.
+        $heads = @(& git -C $Dir ls-remote --heads origin 2>&1 | ForEach-Object { "$_" })
+        if ($LASTEXITCODE -ne 0) { $p.Message = "origin could not be reached, so I cannot tell whether it already has branches; nothing was changed. If it does, rename the branch on the host first (see below)."; $p.Message += "`n`nOn the host (GitHub: Settings > Branches > rename), then here:`n  git fetch origin --prune`n  git branch -m $($p.Cur) main`n  git branch -u origin/main main`n  git remote set-head origin -a"; return $p }
+        $names = @($heads | Where-Object { $_ -match 'refs/heads/(.+)$' } | ForEach-Object { ($_ -replace '^.*refs/heads/', '').Trim() })
+        if ($names.Count) {
+            $p.Message = "origin already has branch(es): $($names -join ', '). Renaming only your local branch would split the history, so nothing was changed.`n`nRename it on the host instead (GitHub: Settings > Branches > rename; this also retargets open pull requests), then here:`n  git fetch origin --prune`n  git branch -m $($p.Cur) main`n  git branch -u origin/main main`n  git remote set-head origin -a"
+            return $p
+        }
+    }
     if ($p.HasCommits) { $p.Commands += "git branch -m $($p.Cur) main" } else { $p.Commands += 'git symbolic-ref HEAD refs/heads/main   (no commits yet, so only the branch name is changed)' }
-    if ($p.Origin -and $p.HasCommits) { $p.Commands += 'git push -u origin main   (only if the remote has the old branch; the old branch is left in place)' }
     $p.Ok = $true; $p
 }
 
@@ -964,17 +973,7 @@ function Invoke-GitOp([string]$Op, [string]$Dir, $Opts) {
                 if ($LASTEXITCODE -ne 0) { $r.Message = "Could not rename the branch: $out"; return $r }
             } else { & git -C $Dir symbolic-ref HEAD refs/heads/main 2>$null }
             $r.Ok = $true; $r.Message = "Renamed branch '$($plan.Cur)' to 'main'."
-            if ($plan.Origin -and -not $plan.HasCommits) { $r.Message += " Nothing was changed on origin: it has no branches yet because this repository has no commits. After your first commit, 'git push -u origin main' creates main there." }
-            if ($plan.Origin -and $plan.HasCommits) {
-                $heads = (& git -C $Dir ls-remote --heads origin $plan.Cur 2>&1 | ForEach-Object { "$_" } | Out-String).Trim()
-                if ($LASTEXITCODE -ne 0) { $r.Message += " The remote could not be reached, so nothing was pushed (run 'git push -u origin main' when it is)." }
-                elseif (-not $heads) { $r.Message += " Nothing was changed on origin: it does not have a '$($plan.Cur)' branch (the old branch was never pushed). Push with 'git push -u origin main' when you are ready." }
-                elseif ($heads) {
-                    $po = (& git -C $Dir push -u origin main 2>&1 | ForEach-Object { "$_" } | Out-String).Trim()
-                    if ($LASTEXITCODE -ne 0) { $r.Message += " Pushing main to origin failed: $(($po -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -Last 1))" }
-                    else { $r.Message += " Pushed main to origin and set it as upstream. The old branch '$($plan.Cur)' still exists on the remote: make main the default branch on the host, then delete the old one there when you are ready." }
-                }
-            }
+            if ($plan.Origin) { $r.Message += " origin has no branches yet, so nothing needs to change there; your first push ('git push -u origin main') creates main." }
         }
         default { $r.Message = "Unknown git action: $Op" }
     }
@@ -982,7 +981,7 @@ function Invoke-GitOp([string]$Op, [string]$Dir, $Opts) {
 }
 
 # Dialog for New remote on GitHub. Returns $null (cancelled) or { Owner, Name, Visibility, Push }.
-function Show-NewRemoteDialog($OwnerForm, [string]$ProjectName, [bool]$IsGit, [bool]$HasCommits, [string[]]$Owners, [string]$DefaultOwner, [string]$DefaultVisibility, [string]$Provider = 'github', [string]$PersonalLogin = '') {
+function Show-NewRemoteDialog($OwnerForm, [string]$ProjectName, [bool]$IsGit, [bool]$HasCommits, [string[]]$Owners, [string]$DefaultOwner, [string]$DefaultVisibility, [string]$Provider = 'github', [string]$PersonalLogin = '', [string]$CurrentBranch = '') {
     $PL = $GitProviders[$Provider].Label; $OwnerLabel = $GitProviders[$Provider].OwnerLabel; $OwnerHint = $GitProviders[$Provider].OwnerHint
     $dlg = New-Object System.Windows.Forms.Form
     $dlg.Text = "New $PL repository for $ProjectName"; $dlg.ClientSize = New-Object System.Drawing.Size(480, 250)
@@ -1031,6 +1030,7 @@ function Show-NewRemoteDialog($OwnerForm, [string]$ProjectName, [bool]$IsGit, [b
         $s = "This will create $full on $PL$visTxt and add it to this project as 'origin'."
         if (-not $IsGit) { $s = "This will run 'git init' in the project, then create $full on $PL$visTxt and add it as 'origin'." }
         if ($chkPush.Checked) { $s += ' The current branch is pushed.' }
+        if ($CurrentBranch -eq 'master') { $s += " Note: the local branch is 'master', which becomes the default branch on the host (use Git > Rename branch to main... first if you prefer main)." }
         $summary.Text = $s
     }.GetNewClosure()
     $cboOwner.Add_TextChanged($update); $txtName.Add_TextChanged($update); $cboVis.Add_SelectedIndexChanged($update); $chkPush.Add_CheckedChanged($update)
@@ -1122,7 +1122,7 @@ function Invoke-PickerGitOp([string]$Op, $Row, $OwnerForm, [string]$PresetOwner 
             elseif ($prov -eq 'github') { $default = [string]$cfg.gitOpsOrg; if (-not $default -and $owners.Count) { $default = $owners[0] } }
             elseif ($owners.Count) { $default = $owners[0] }
             $login = ''; if ($prov -eq 'github') { $login = Get-GitHubLogin }
-            $opts = Show-NewRemoteDialog $OwnerForm $Row.Name $isGit ($isGit -and (Test-GitHasCommits $Row.Path)) $owners $default ([string]$cfg.gitOpsVisibility) $prov $login
+            $opts = Show-NewRemoteDialog $OwnerForm $Row.Name $isGit ($isGit -and (Test-GitHasCommits $Row.Path)) $owners $default ([string]$cfg.gitOpsVisibility) $prov $login ($(if ($isGit) { "$(& git -C $Row.Path symbolic-ref --short HEAD 2>$null)".Trim() } else { '' }))
             if (-not $opts) { return 'Cancelled.' }
             $hostName = ($targets | Where-Object { $_.Owner -eq $opts.Owner } | Select-Object -First 1).Host
             $opts | Add-Member -NotePropertyName Host -NotePropertyValue ([string]$hostName)
@@ -2033,7 +2033,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
         $mUrl.ToolTipText = $(if ($row.RemoteUrl) { 'This project already has a remote.' } else { 'Attach a repository you already created on any host, by URL.' })
         $mUrl.Tag = @{ Fn = $runGit; A = @('addurl', '') }; $mUrl.Add_Click($menuClick)
         $mRen.Enabled = ($isGit -and [string]$row.Branch -ne 'main' -and [string]$row.Branch -ne '')
-        $mRen.ToolTipText = $(if (-not $isGit) { 'Not a git repository.' } elseif ([string]$row.Branch -eq 'main') { "Already on 'main'." } else { "Rename '$($row.Branch)' to 'main' (asks first and shows the commands; the old branch on a remote is left in place)." })
+        $mRen.ToolTipText = $(if (-not $isGit) { 'Not a git repository.' } elseif ([string]$row.Branch -eq 'main') { "Already on 'main'." } else { "Rename '$($row.Branch)' to 'main' (asks first and shows the commands; local only, and it refuses if origin already has branches: rename those on the host instead)." })
         $mRen.Tag = @{ Fn = $runGit; A = @('rename-main', '') }; $mRen.Add_Click($menuClick)
         # Submenu per provider; configured targets (gitOpsTargets) are listed first, then "Other...".
         foreach ($pv in 'github','gitlab','azure') {
