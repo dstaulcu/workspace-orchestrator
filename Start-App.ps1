@@ -1571,6 +1571,9 @@ public static class WoTheme {
             int v = dark ? 1 : 0;
             // 20 = DWMWA_USE_IMMERSIVE_DARK_MODE (Windows 10 20H1 and later); 19 on 1809-1909.
             if (DwmSetWindowAttribute(f.Handle, 20, ref v, 4) != 0) DwmSetWindowAttribute(f.Handle, 19, ref v, 4);
+            // 36 = DWMWA_TEXT_COLOR (Windows 11): bright caption text in dark mode, the system default otherwise. Ignored on Windows 10.
+            int text = dark ? (Fore.B << 16) | (Fore.G << 8) | Fore.R : unchecked((int)0xFFFFFFFF);
+            DwmSetWindowAttribute(f.Handle, 36, ref text, 4);
             if (redraw) SetWindowPos(f.Handle, IntPtr.Zero, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020);   // NOSIZE|NOMOVE|NOZORDER|NOACTIVATE|FRAMECHANGED
         } catch { }
     }
@@ -2144,7 +2147,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
     $filterBox.Location = New-Object System.Drawing.Point(60, 12); $filterBox.Width = 212; $filterBox.Text = $InitialFilter
     $btnClearFilter = New-Object System.Windows.Forms.Button
     $btnClearFilter.Text = [string][char]0x00D7; $btnClearFilter.Location = New-Object System.Drawing.Point(275, 11); $btnClearFilter.Size = New-Object System.Drawing.Size(26, 25)
-    $btnClearFilter.TabStop = $false; $btnClearFilter.Enabled = ($filterBox.TextLength -gt 0)
+    $btnClearFilter.TabStop = $false   # always enabled so the x stays readable; with an empty filter it does nothing
     $stateBox = New-Object System.Windows.Forms.ComboBox
     $stateBox.DropDownStyle = 'DropDownList'; $stateBox.Location = New-Object System.Drawing.Point(308, 12); $stateBox.Width = 124
     [void]$stateBox.Items.AddRange(@('All projects', 'Dirty (uncommitted)', 'Clean', 'Open in terminal', 'Not open', 'Not a git repo')); $stateBox.SelectedIndex = 0
@@ -2494,7 +2497,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
             & $setSelection (@($ctx.Checked) + @($lv.Items | ForEach-Object { [string]$_.Tag })); & $showSel; $e.SuppressKeyPress = $true
         }
     }.GetNewClosure())
-    $filterBox.Add_TextChanged({ $btnClearFilter.Enabled = ($filterBox.TextLength -gt 0); & $fill }.GetNewClosure())
+    $filterBox.Add_TextChanged({ & $fill }.GetNewClosure())
     $btnClearFilter.Add_Click({ $filterBox.Clear(); [void]$filterBox.Focus() }.GetNewClosure())
     # Esc in a non-empty filter box clears it; in an empty one it still closes the picker (the form's Cancel button).
     $filterBox.Add_PreviewKeyDown({ param($s, $e) if ($e.KeyCode -eq [System.Windows.Forms.Keys]::Escape -and $filterBox.TextLength -gt 0) { $e.IsInputKey = $true } }.GetNewClosure())
