@@ -57,7 +57,7 @@ param(
 )
 
 # ---------------------------------------------------------------- config / state
-$AppVersion = '1.9.0'   # bump on every release; the update check compares it with the latest GitHub release tag
+$AppVersion = '1.10.0'   # bump on every release; the update check compares it with the latest GitHub release tag
 # Branding: every name, tagline and repository link the app shows comes from assets\brand.json, so a fork rebrands by editing that one file.
 $AppBrand = @{ name = 'Workspace Wrangler'; shortName = 'Wrangler'; tagline = 'Tame your sea of projects and terminals, and restart your whole workday in one click.'; repo = 'dstaulcu/workspace-wrangler' }
 try {
