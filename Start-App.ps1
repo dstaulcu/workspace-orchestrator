@@ -1385,6 +1385,7 @@ function Initialize-Theme([string]$Mode) {
         Add-Type -ReferencedAssemblies System.Windows.Forms, System.Drawing -TypeDefinition @'
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Runtime.CompilerServices;
@@ -1410,8 +1411,10 @@ public static class WoTheme {
         public Color Back, Fore, Border, Over, Down, Link, ActiveLink, Visited, DisabledLink;
         public FlatStyle Flat;
         public BorderStyle Box;
-        public bool VisualBack, HeaderHooked, NativeHooked, Grid, PaintHooked;
+        public bool VisualBack, HeaderHooked, NativeHooked, Grid, PaintHooked, BackSet, ForeSet, ComboHooked;
+        public DrawMode Draw;
         public WoGridLines GridPainter;
+        public WoCombo ComboPainter;
         public string Role = "";
     }
 
@@ -1600,13 +1603,16 @@ public static class WoTheme {
     static Orig Record(Control c) {
         Orig o = new Orig();
         o.Back = c.BackColor; o.Fore = c.ForeColor;
+        // A color the control only inherits from its parent (ambient) is reset, not copied, when light mode restores it:
+        // copying it would pin the parent's dark color on the control.
+        o.BackSet = IsSet(c, "BackColor"); o.ForeSet = IsSet(c, "ForeColor");
         ButtonBase bb = c as ButtonBase;
         if (bb != null) {
             o.Flat = bb.FlatStyle; o.VisualBack = bb.UseVisualStyleBackColor;
             o.Border = bb.FlatAppearance.BorderColor; o.Over = bb.FlatAppearance.MouseOverBackColor; o.Down = bb.FlatAppearance.MouseDownBackColor;
         }
         ComboBox cb = c as ComboBox;
-        if (cb != null) o.Flat = cb.FlatStyle;
+        if (cb != null) { o.Flat = cb.FlatStyle; o.Draw = cb.DrawMode; }
         ListView lv = c as ListView;
         if (lv != null) o.Grid = lv.GridLines;
         TextBox tb = c as TextBox;
@@ -1623,7 +1629,7 @@ public static class WoTheme {
 
     static void Style(Control c, Orig o) {
         if (c is Form) {
-            c.BackColor = dark ? Back : o.Back; c.ForeColor = dark ? Fore : o.Fore;
+            if (dark) { c.BackColor = Back; c.ForeColor = Fore; } else Restore(c, o);
             return;
         }
         Button b = c as Button;
@@ -1634,7 +1640,7 @@ public static class WoTheme {
                 b.FlatAppearance.BorderColor = Border; b.FlatAppearance.MouseOverBackColor = ButtonHover; b.FlatAppearance.MouseDownBackColor = ButtonDown;
                 if (!o.PaintHooked) { b.Paint += OnButtonPaint; o.PaintHooked = true; }
             } else {
-                b.FlatStyle = o.Flat; b.BackColor = o.Back; b.ForeColor = o.Fore;
+                b.FlatStyle = o.Flat; Restore(c, o);
                 b.FlatAppearance.BorderColor = o.Border; b.FlatAppearance.MouseOverBackColor = o.Over; b.FlatAppearance.MouseDownBackColor = o.Down;
                 b.UseVisualStyleBackColor = o.VisualBack;   // after BackColor, which clears it
             }
@@ -1654,11 +1660,18 @@ public static class WoTheme {
         ComboBox cb = c as ComboBox;
         if (cb != null) {
             cb.FlatStyle = dark ? FlatStyle.Flat : o.Flat;
-            cb.BackColor = dark ? Field : o.Back; cb.ForeColor = dark ? FieldFore : o.Fore;
+            if (dark) { cb.BackColor = Field; cb.ForeColor = FieldFore; } else Restore(c, o);
+            // The flat style still draws the arrow button and the open list in light colors; WoCombo repaints the arrow and
+            // the list items are drawn here.
+            if (!o.ComboHooked) { cb.DrawItem += OnComboDrawItem; cb.DropDown += OnComboDropDown; o.ComboHooked = true; }
+            if (dark && o.ComboPainter == null) o.ComboPainter = new WoCombo(cb);
+            DrawMode want = dark ? DrawMode.OwnerDrawFixed : o.Draw;
+            if (cb.DrawMode != want) cb.DrawMode = want;
+            cb.Invalidate();
             return;
         }
         if (c is TextBoxBase || c is ListBox || c is ListView || c is TreeView || c is UpDownBase) {
-            c.BackColor = dark ? Field : o.Back; c.ForeColor = dark ? FieldFore : o.Fore;
+            if (dark) { c.BackColor = Field; c.ForeColor = FieldFore; } else Restore(c, o);
             TextBox tb = c as TextBox;
             // The themed 3D border lights up in the Windows accent color on focus; a plain single border stays quiet in dark mode.
             if (tb != null && o.Box == BorderStyle.Fixed3D) tb.BorderStyle = dark ? BorderStyle.FixedSingle : o.Box;
@@ -1716,6 +1729,44 @@ public static class WoTheme {
         string text = e.Header == null ? "" : e.Header.Text;
         TextRenderer.DrawText(e.Graphics, text, e.Font, Rectangle.Inflate(r, -6, 0), Fore, f);
     }
+    static bool IsSet(Control c, string name) {
+        try { PropertyDescriptor p = TypeDescriptor.GetProperties(c)[name]; return p == null || p.ShouldSerializeValue(c); } catch { return true; }
+    }
+    static void Restore(Control c, Orig o) {
+        if (o.BackSet) c.BackColor = o.Back; else c.ResetBackColor();
+        if (o.ForeSet) c.ForeColor = o.Fore; else c.ResetForeColor();
+    }
+
+    // Dark combo box items: the open list and, for a drop-down list, the closed box's text.
+    static void OnComboDrawItem(object sender, DrawItemEventArgs e) {
+        ComboBox cb = sender as ComboBox;
+        if (cb == null) return;
+        bool sel = (e.State & DrawItemState.Selected) != 0;
+        Color back = dark ? (sel ? SelectBack : Field) : (sel ? SystemColors.Highlight : cb.BackColor);
+        Color fore = dark ? FieldFore : (sel ? SystemColors.HighlightText : cb.ForeColor);
+        using (SolidBrush bg = new SolidBrush(back)) e.Graphics.FillRectangle(bg, e.Bounds);
+        if (e.Index >= 0 && e.Index < cb.Items.Count) {
+            Rectangle tr = new Rectangle(e.Bounds.X + 2, e.Bounds.Y, Math.Max(0, e.Bounds.Width - 2), e.Bounds.Height);
+            TextRenderer.DrawText(e.Graphics, cb.GetItemText(cb.Items[e.Index]), e.Font ?? cb.Font, tr, fore,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        }
+    }
+    // Dark scroll bar on the open list, where Windows offers one.
+    [StructLayout(LayoutKind.Sequential)] struct RECT { public int Left, Top, Right, Bottom; }
+    [StructLayout(LayoutKind.Sequential)] struct COMBOBOXINFO { public int cbSize; public RECT rcItem, rcButton; public int stateButton; public IntPtr hwndCombo, hwndItem, hwndList; }
+    [DllImport("user32.dll")] static extern bool GetComboBoxInfo(IntPtr hwnd, ref COMBOBOXINFO info);
+    static void OnComboDropDown(object sender, EventArgs e) {
+        ComboBox cb = sender as ComboBox;
+        if (cb == null || Build < 17763) return;
+        try {
+            COMBOBOXINFO ci = new COMBOBOXINFO(); ci.cbSize = Marshal.SizeOf(typeof(COMBOBOXINFO));
+            if (GetComboBoxInfo(cb.Handle, ref ci) && ci.hwndList != IntPtr.Zero) {
+                try { AllowDarkModeForWindow(ci.hwndList, dark); } catch { }
+                SetWindowTheme(ci.hwndList, dark ? "DarkMode_Explorer" : null, null);
+            }
+        } catch { }
+    }
+
     // Whether the list had grid lines before dark mode turned the native ones off.
     static bool seenGrid(ListView lv) { Orig o; return seen.TryGetValue(lv, out o) && o.Grid; }
 
@@ -1752,8 +1803,17 @@ public static class WoTheme {
         if (e.ColumnIndex == 0 && e.Item.ListView.CheckBoxes) {
             CheckBoxState cs = e.Item.Checked ? CheckBoxState.CheckedNormal : CheckBoxState.UncheckedNormal;
             Size gs = CheckBoxRenderer.GetGlyphSize(e.Graphics, cs);
-            CheckBoxRenderer.DrawCheckBox(e.Graphics, new Point(b.X + 4 + Math.Max(0, (16 - gs.Width) / 2), b.Y + Math.Max(0, (b.Height - gs.Height) / 2)), cs);
-            tr = new Rectangle(b.X + 20, b.Y, Math.Max(0, b.Width - 21), b.Height);
+            // Draw the box where Windows hit-tests it (the state-image slot, left of the icon/label), so a click on the box
+            // ticks it instead of landing on the row and replacing the selection. The slot grows with display scaling.
+            int slotRight = b.X + 20, textLeft = b.X + 20;
+            try {
+                Rectangle ic = e.Item.GetBounds(ItemBoundsPortion.Icon), lb = e.Item.GetBounds(ItemBoundsPortion.Label);
+                if (ic.Left > b.X + gs.Width / 2 && ic.Left < b.X + 80) slotRight = ic.Left;
+                if (lb.Left >= slotRight && lb.Left < b.X + 100) textLeft = lb.Left + 2;
+            } catch { }
+            int cx = b.X + Math.Max(0, (slotRight - b.X - gs.Width) / 2);
+            CheckBoxRenderer.DrawCheckBox(e.Graphics, new Point(cx, b.Y + Math.Max(0, (b.Height - gs.Height) / 2)), cs);
+            tr = new Rectangle(textLeft, b.Y, Math.Max(0, b.Right - textLeft - 1), b.Height);
         }
         Color fc = own ? e.SubItem.ForeColor : e.Item.ForeColor;
         Font font = (own ? e.SubItem.Font : e.Item.Font) ?? e.Item.ListView.Font;
@@ -1809,6 +1869,41 @@ public class WoGridLines : NativeWindow {
                 x += c.Width;
                 if (x - 1 >= cr.Left && x - 1 < cr.Right) g.DrawLine(p, x - 1, fb.Top, x - 1, yEnd - 1);
             }
+        }
+    }
+}
+
+// Repaints a flat combo box's arrow button and border in dark mode (WinForms draws them in light system colors).
+public class WoCombo : NativeWindow {
+    readonly ComboBox cb;
+    public WoCombo(ComboBox c) {
+        cb = c;
+        c.HandleCreated += OnHandleCreated;
+        c.HandleDestroyed += OnHandleDestroyed;
+        if (c.IsHandleCreated) AssignHandle(c.Handle);
+    }
+    void OnHandleCreated(object sender, EventArgs e) { if (Handle == IntPtr.Zero) AssignHandle(cb.Handle); }
+    void OnHandleDestroyed(object sender, EventArgs e) { ReleaseHandle(); }
+    protected override void WndProc(ref Message m) {
+        base.WndProc(ref m);
+        if (m.Msg == 0x000F && WoTheme.Dark && cb.FlatStyle == FlatStyle.Flat) { try { Draw(); } catch { } }   // WM_PAINT
+    }
+    void Draw() {
+        if (cb.IsDisposed) return;
+        Rectangle r = cb.ClientRectangle;
+        if (r.Width < 20 || r.Height < 8) return;
+        int w = SystemInformation.VerticalScrollBarWidth;
+        Rectangle arrow = new Rectangle(r.Right - w - 1, r.Top + 1, w, r.Height - 2);
+        using (Graphics g = cb.CreateGraphics()) {
+            using (SolidBrush bg = new SolidBrush(cb.Enabled ? WoTheme.ButtonBack : WoTheme.Field)) g.FillRectangle(bg, arrow);
+            using (Pen p = new Pen(WoTheme.Border)) {
+                g.DrawRectangle(p, r.X, r.Y, r.Width - 1, r.Height - 1);
+                g.DrawLine(p, arrow.Left - 1, arrow.Top, arrow.Left - 1, arrow.Bottom - 1);
+            }
+            int cx = arrow.Left + arrow.Width / 2, cy = arrow.Top + arrow.Height / 2;
+            Point[] tri = { new Point(cx - 4, cy - 2), new Point(cx + 4, cy - 2), new Point(cx, cy + 2) };
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            using (SolidBrush fb = new SolidBrush(cb.Enabled ? WoTheme.Fore : WoTheme.Disabled)) g.FillPolygon(fb, tri);
         }
     }
 }
