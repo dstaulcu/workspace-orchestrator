@@ -50,7 +50,7 @@ Select projects by ticking their boxes, or by Ctrl-clicking and Shift-clicking r
 | **Arrange** | Cascade, grid, side by side, stacked, reset size. **Shift** ignores saved spots. |
 | **Git** | Open the repo in a browser, `git init`, create a remote (GitHub / GitLab / Azure DevOps submenus), add an existing remote URL, **push the current branch to origin** (asks first; a plain push, never forced), or rename a local `master` to `main`. Also on the right-click menu. |
 | **IDE** | Open every selected project in your IDE, one window each (`ide`, default `code`). |
-| **Settings** | Edit `config.json` / `presets.json`, save window layout, check for updates, open the changelog. |
+| **Settings** | Edit `config.json` / `presets.json`, save window layout, check for updates, open the changelog, pick the **Theme**. |
 
 **Right-click a project** for finer control: **Launch** (Claude + shell, Claude only, shell only, a **Claude session** choice of continue / pick one to resume with `--resume` / fresh, or a new window even if already open), **Switch** (to its Claude tab or its shell tab), **IDE** (open in your IDE, open the folder in File Explorer, copy the path), **Git**, **Launch options...** and **Rename project...**. Launch, Switch and IDE act on the highlighted projects; Git, Launch options and Rename act on the first one. **Launch options...** edits that project's entry in `presets.json` without hand-editing JSON: its Claude arguments, whether it gets a shell tab and git summary, a **startup command** for the shell tab (such as `npm run dev`), **URLs** to open in your browser each time it launches, and its tab color. Extra tabs and extra applications stay in `presets.json` (a button in the dialog opens it). Add your own Claude variants (for example plan mode) with `claudeVariants` in `config.json`.
 
@@ -59,6 +59,8 @@ The **+ New project** button beside the filter box (or a right-click in empty sp
 For a fresh Claude conversation use right-click > **Launch > Claude session**, or `-Fresh` from the command line. The picker stays open after launching, so you can keep launching and switching. Tabs are titled `cc:<project>` and `sh:<scope>`; that is how open projects are found, so don't rename them.
 
 **Hotkey:** while the picker is open (it can be minimized), **Ctrl+Alt+W** finds all open workspaces, restores minimized ones and cascades them, and parks the Wrangler itself beside the cascade (top aligned with the first window, just right of the last one; against the screen's right edge if there is no room) so it never gets buried behind them. The hotkey is also shown in the picker (hint line, Arrange tooltip and menu). Change it with `hotkey` in `config.json` (empty turns it off); the picker says so in the status bar if another program already owns the key. Without the picker: `Start-WorkspaceWrangler.ps1 -Cascade`.
+
+**Light and dark:** the picker and its dialogs follow Windows' app mode (**Settings > Personalization > Colors**) and switch while open when you change it. **Settings > Theme** (or `theme` in `config.json`) fixes it to light or dark instead. Message boxes and the folder and color pickers keep Windows' own look.
 
 **Window layout:** new windows are cascaded (`arrangeStyle`: `cascade`, `grid`, `columns`, `rows`). **Settings > Save window layout** remembers where each open project's window is, per monitor setup, and later launches put them back.
 

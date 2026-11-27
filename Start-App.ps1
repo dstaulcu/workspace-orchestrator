@@ -65,7 +65,7 @@ $cfg = @{
     shell = $true; diff = $true; tabColors = $true; gitInfo = $true; claudeArgs = ''; refreshSeconds = 60; arrangeOnLaunch = $true; arrangeStyle = 'cascade'; keepDesktopIconsClear = $true; windowWidth = 1100; windowHeight = 750; restoreLayouts = $true
     checkForUpdates = $true; updateCheckHours = 24; updateRepo = 'dstaulcu/workspace-wrangler'
     gitOpsOrg = ''; gitOpsTargets = @(); gitOpsVisibility = 'private'; defaultBranch = 'main'
-    ide = 'code'; ideArgs = '-n'; git = 'git'; hotkey = 'Ctrl+Alt+W'; claudeVariants = @()
+    ide = 'code'; ideArgs = '-n'; git = 'git'; hotkey = 'Ctrl+Alt+W'; claudeVariants = @(); theme = 'system'
 }
 # Settings live outside the repo so they survive updates; files from older versions are moved over once.
 $ConfigDir = Join-Path $env:USERPROFILE '.config\workspace_app'
@@ -1034,7 +1034,7 @@ function Invoke-GitOp([string]$Op, [string]$Dir, $Opts) {
 # Dialog for New remote on GitHub. Returns $null (cancelled) or { Owner, Name, Visibility, Push }.
 function Show-NewRemoteDialog($OwnerForm, [string]$ProjectName, [bool]$IsGit, [bool]$HasCommits, [string[]]$Owners, [string]$DefaultOwner, [string]$DefaultVisibility, [string]$Provider = 'github', [string]$PersonalLogin = '', [string]$CurrentBranch = '') {
     $PL = $GitProviders[$Provider].Label; $OwnerLabel = $GitProviders[$Provider].OwnerLabel; $OwnerHint = $GitProviders[$Provider].OwnerHint
-    $dlg = New-Object System.Windows.Forms.Form
+    $dlg = New-ThemedForm
     $dlg.Text = "New $PL repository for $ProjectName"; $dlg.ClientSize = New-Object System.Drawing.Size(480, 250)
     $dlg.FormBorderStyle = 'FixedDialog'; $dlg.MaximizeBox = $false; $dlg.MinimizeBox = $false; $dlg.StartPosition = 'CenterParent'
     $mk = {
@@ -1065,7 +1065,7 @@ function Show-NewRemoteDialog($OwnerForm, [string]$ProjectName, [bool]$IsGit, [b
     $cancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
     $dlg.AcceptButton = $ok; $dlg.CancelButton = $cancel
     $dlg.Controls.AddRange(@((& $mk $OwnerLabel 12), $cboOwner, (& $mk 'Repository name:' 44), $txtName, (& $mk 'Visibility:' 76), $cboVis, $chkPush, $summary, $ok, $cancel))
-    $tip = New-Object System.Windows.Forms.ToolTip
+    $tip = New-ThemedToolTip
     $tip.SetToolTip($cboOwner, "Where to create the repository (pick one or type it); $OwnerHint. Organizations you list under gitOpsTargets in config.json appear here.")
     $tip.SetToolTip($txtName, 'Name of the new repository (letters, digits, ".", "-" and "_"). Defaults to the folder name.')
     $tip.SetToolTip($cboVis, 'Who can see the repository: private (only you / your org), internal (your enterprise) or public.')
@@ -1115,7 +1115,7 @@ function Show-NewRemoteDialog($OwnerForm, [string]$ProjectName, [bool]$IsGit, [b
 
 # Small dialog: attach an existing remote by URL. Returns $null or { Provider='url'; Url; Push }.
 function Show-AddRemoteDialog($OwnerForm, [string]$ProjectName, [bool]$HasCommits) {
-    $dlg = New-Object System.Windows.Forms.Form
+    $dlg = New-ThemedForm
     $dlg.Text = "Add existing remote for $ProjectName"; $dlg.ClientSize = New-Object System.Drawing.Size(480, 150)
     $dlg.FormBorderStyle = 'FixedDialog'; $dlg.MaximizeBox = $false; $dlg.MinimizeBox = $false; $dlg.StartPosition = 'CenterParent'
     $l = New-Object System.Windows.Forms.Label; $l.Text = 'Remote URL:'; $l.AutoSize = $true; $l.Location = New-Object System.Drawing.Point(12, 16)
@@ -1129,7 +1129,7 @@ function Show-AddRemoteDialog($OwnerForm, [string]$ProjectName, [bool]$HasCommit
     $cancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
     $dlg.AcceptButton = $ok; $dlg.CancelButton = $cancel
     $dlg.Controls.AddRange(@($l, $txt, $chk, $note, $ok, $cancel))
-    $tip = New-Object System.Windows.Forms.ToolTip
+    $tip = New-ThemedToolTip
     $tip.SetToolTip($txt, 'The URL of a repository you already created, e.g. https://host/owner/repo.git or git@host:owner/repo.git.')
     $tip.SetToolTip($chk, 'Also push the current branch to that remote right after adding it. Needs at least one commit.')
     $tip.SetToolTip($ok, "Add this URL to the project as 'origin'. Nothing is created on the host.")
@@ -1366,6 +1366,411 @@ function Invoke-OpenIde([string[]]$Paths) {
     "Opened $n project(s) in $(Get-IdeDisplayName $ide)."
 }
 
+# ---------------------------------------------------------------- theme (light / dark, follows the Windows app mode)
+# Config `theme`: "system" (default) follows Settings > Personalization > Colors > app mode and switches open windows live when it
+# changes; "light" or "dark" fixes it. Settings > Theme in the picker changes it too. All of it lives in the WoTheme type so WinForms
+# closures can reach it ([WoTheme]::...) without script functions. Every window goes through New-ThemedForm and every ToolTip through
+# New-ThemedToolTip. Message boxes and the folder/color pickers are drawn by Windows itself and are not themed here.
+function Initialize-Theme([string]$Mode) {
+    if ('WoTheme' -as [type]) { return }
+    try {
+        Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing
+        Add-Type -ReferencedAssemblies System.Windows.Forms, System.Drawing -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Windows.Forms;
+using Microsoft.Win32;
+
+// Light/dark theme for the WinForms UI (C# 5: Windows PowerShell 5.1 compiles Add-Type code with the .NET Framework compiler).
+// Light mode leaves every control exactly as WinForms draws it; dark mode recolors controls and remembers what it changed so a
+// switch back to light restores the original values. Mode "system" follows Settings > Personalization > Colors > app mode
+// (AppsUseLightTheme) and updates open windows when it changes. High contrast always wins: no dark palette is applied then.
+public static class WoTheme {
+    [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
+    [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)] static extern int SetWindowTheme(IntPtr hwnd, string subAppName, string subIdList);
+    [DllImport("uxtheme.dll", EntryPoint = "#133")] static extern bool AllowDarkModeForWindow(IntPtr hwnd, bool allow);
+    [DllImport("uxtheme.dll", EntryPoint = "#135")] static extern int SetPreferredAppMode(int mode);
+    [DllImport("uxtheme.dll", EntryPoint = "#136")] static extern void FlushMenuThemes();
+    [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
+
+    class Orig {
+        public Color Back, Fore, Border, Over, Down, Link, ActiveLink, Visited, DisabledLink;
+        public FlatStyle Flat;
+        public bool VisualBack, HeaderHooked, NativeHooked;
+        public string Role = "";
+    }
+
+    static readonly ConditionalWeakTable<Control, Orig> seen = new ConditionalWeakTable<Control, Orig>();
+    static readonly List<Form> forms = new List<Form>();
+    static readonly List<WeakReference> tips = new List<WeakReference>();
+    static string mode = "system";
+    static bool dark, hooked, rendererSet, appModeSet;
+    static int build = -1;
+
+    public static event EventHandler Changed;
+    public static string Mode { get { return mode; } }
+    public static bool Dark { get { return dark; } }
+
+    // Palette. Light values are exactly what the app drew before theming existed.
+    public static Color Back { get { return dark ? Color.FromArgb(32, 32, 32) : SystemColors.Control; } }
+    public static Color Fore { get { return dark ? Color.FromArgb(240, 240, 240) : SystemColors.ControlText; } }
+    public static Color Field { get { return dark ? Color.FromArgb(43, 43, 43) : SystemColors.Window; } }
+    public static Color FieldFore { get { return dark ? Color.FromArgb(240, 240, 240) : SystemColors.WindowText; } }
+    public static Color Hint { get { return dark ? Color.FromArgb(160, 160, 160) : SystemColors.GrayText; } }
+    public static Color Error { get { return dark ? Color.FromArgb(255, 128, 128) : Color.Firebrick; } }
+    public static Color Link { get { return dark ? Color.FromArgb(102, 178, 255) : Color.FromArgb(0, 102, 204); } }
+    public static Color Warn { get { return dark ? Color.FromArgb(255, 170, 80) : Color.FromArgb(196, 98, 0); } }
+    public static Color OpenRow { get { return dark ? Color.FromArgb(28, 66, 40) : Color.FromArgb(222, 245, 226); } }
+    public static Color Border { get { return dark ? Color.FromArgb(85, 85, 85) : SystemColors.ControlDark; } }
+    public static Color Disabled { get { return dark ? Color.FromArgb(128, 128, 128) : SystemColors.GrayText; } }
+    internal static Color ButtonBack { get { return Color.FromArgb(55, 55, 55); } }
+    internal static Color ButtonHover { get { return Color.FromArgb(70, 70, 70); } }
+    internal static Color ButtonDown { get { return Color.FromArgb(85, 85, 85); } }
+    internal static Color HeaderBack { get { return Color.FromArgb(45, 45, 45); } }
+    internal static Color HeaderLine { get { return Color.FromArgb(70, 70, 70); } }
+    internal static Color MenuBack { get { return Color.FromArgb(43, 43, 43); } }
+    internal static Color MenuHover { get { return Color.FromArgb(65, 65, 65); } }
+    internal static Color CheckBack { get { return Color.FromArgb(60, 90, 130); } }
+
+    static int Build {
+        get {
+            if (build < 0) {
+                build = 0;
+                try {
+                    object v = Registry.GetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion", "CurrentBuildNumber", "0");
+                    int b; if (v != null && int.TryParse(v.ToString(), out b)) build = b;
+                } catch { }
+            }
+            return build;
+        }
+    }
+
+    // True when Windows apps are set to dark (Settings > Personalization > Colors > Choose your default app mode).
+    public static bool SystemIsDark() {
+        try {
+            object v = Registry.GetValue(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize", "AppsUseLightTheme", 1);
+            return v is int && (int)v == 0;
+        } catch { return false; }
+    }
+
+    static string Normalize(string m) {
+        m = (m ?? "").Trim().ToLowerInvariant();
+        return (m == "light" || m == "dark") ? m : "system";
+    }
+
+    static bool Resolve() {
+        if (SystemInformation.HighContrast) return false;
+        if (mode == "dark") return true;
+        if (mode == "light") return false;
+        return SystemIsDark();
+    }
+
+    // Call once, before the first window is created.
+    public static void Init(string m) {
+        mode = Normalize(m);
+        dark = Resolve();
+        ApplyGlobal();
+        if (!hooked) { SystemEvents.UserPreferenceChanged += OnPreferenceChanged; hooked = true; }
+    }
+
+    // Settings > Theme: switch now (UI thread). Raises Changed even when the colors stay the same.
+    public static void SetMode(string m) {
+        mode = Normalize(m);
+        Refresh(true);
+    }
+
+    static void OnPreferenceChanged(object sender, UserPreferenceChangedEventArgs e) {
+        if (mode != "system" && e.Category != UserPreferenceCategory.Accessibility) return;
+        Form f = null;
+        lock (forms) { foreach (Form x in forms) { if (x.IsHandleCreated && !x.IsDisposed) { f = x; break; } } }
+        if (f == null) return;   // no window open: the next one picks up the current setting when it is created
+        try {
+            if (f.InvokeRequired) f.BeginInvoke(new MethodInvoker(delegate { Refresh(false); }));
+            else Refresh(false);
+        } catch { }
+    }
+
+    static void Refresh(bool force) {
+        bool d = Resolve();
+        if (d == dark && !force) return;
+        bool flipped = d != dark;
+        dark = d;
+        if (flipped) {
+            ApplyGlobal();
+            Form[] open; lock (forms) { open = forms.ToArray(); }
+            foreach (Form f in open) {
+                if (f.IsDisposed) continue;
+                TitleBar(f, true);
+                ApplyTree(f);
+                f.Invalidate(true);
+            }
+        }
+        EventHandler h = Changed;
+        if (h != null) h(null, EventArgs.Empty);
+    }
+
+    static void ApplyGlobal() {
+        if (Build >= 17763 && (dark || appModeSet)) {
+            // Native parts (text box right-click menus, scroll bars) follow the app mode. Undocumented uxtheme exports, so best effort.
+            try { SetPreferredAppMode(dark ? (Build >= 18362 ? 2 : 1) : 0); FlushMenuThemes(); appModeSet = dark; } catch { }
+        }
+        if (dark) { ToolStripManager.Renderer = new WoDarkRenderer(); rendererSet = true; }
+        else if (rendererSet) { ToolStripManager.RenderMode = ToolStripManagerRenderMode.Professional; rendererSet = false; }
+        lock (tips) {
+            for (int i = tips.Count - 1; i >= 0; i--) {
+                ToolTip t = tips[i].Target as ToolTip;
+                if (t == null) { tips.RemoveAt(i); continue; }
+                try { t.OwnerDraw = dark; } catch { }
+            }
+        }
+    }
+
+    // Register a window: its title bar and controls follow the theme from now on. Call right after creating it.
+    public static Form Track(Form f) {
+        if (f == null) return f;
+        f.HandleCreated += OnFormHandleCreated;
+        f.Load += OnFormLoad;
+        f.FormClosed += OnFormClosed;
+        lock (forms) { forms.Add(f); }
+        return f;
+    }
+
+    // Register a ToolTip: drawn dark in dark mode, native otherwise.
+    public static ToolTip Tip(ToolTip t) {
+        if (t == null) return t;
+        t.Draw += OnTipDraw;
+        t.OwnerDraw = dark;
+        lock (tips) { tips.Add(new WeakReference(t)); }
+        return t;
+    }
+
+    static void OnFormHandleCreated(object sender, EventArgs e) { TitleBar(sender as Form, false); }
+    static void OnFormLoad(object sender, EventArgs e) { Control c = sender as Control; if (c != null) ApplyTree(c); }
+    static void OnFormClosed(object sender, FormClosedEventArgs e) { lock (forms) { forms.Remove(sender as Form); } }
+
+    static void TitleBar(Form f, bool redraw) {
+        if (f == null || !f.IsHandleCreated || Build < 17763) return;
+        try {
+            int v = dark ? 1 : 0;
+            // 20 = DWMWA_USE_IMMERSIVE_DARK_MODE (Windows 10 20H1 and later); 19 on 1809-1909.
+            if (DwmSetWindowAttribute(f.Handle, 20, ref v, 4) != 0) DwmSetWindowAttribute(f.Handle, 19, ref v, 4);
+            if (redraw) SetWindowPos(f.Handle, IntPtr.Zero, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020);   // NOSIZE|NOMOVE|NOZORDER|NOACTIVATE|FRAMECHANGED
+        } catch { }
+    }
+
+    // Recolor a control and everything inside it. In light mode only controls that were dark before are touched (restored).
+    public static void ApplyTree(Control c) {
+        if (c == null || c.IsDisposed) return;
+        Orig o;
+        if (!seen.TryGetValue(c, out o)) {
+            if (dark) { o = Record(c); seen.Add(c, o); }
+        }
+        if (o != null && o.Role != "keep") { try { Style(c, o); } catch { } }
+        foreach (Control k in c.Controls) ApplyTree(k);
+    }
+
+    // Leave a control's colors alone (for example a color swatch).
+    public static void Keep(Control c) {
+        if (c == null) return;
+        Orig o;
+        if (seen.TryGetValue(c, out o)) o.Role = "keep";
+        else { o = new Orig(); o.Role = "keep"; seen.Add(c, o); }
+    }
+
+    static Orig Record(Control c) {
+        Orig o = new Orig();
+        o.Back = c.BackColor; o.Fore = c.ForeColor;
+        ButtonBase bb = c as ButtonBase;
+        if (bb != null) {
+            o.Flat = bb.FlatStyle; o.VisualBack = bb.UseVisualStyleBackColor;
+            o.Border = bb.FlatAppearance.BorderColor; o.Over = bb.FlatAppearance.MouseOverBackColor; o.Down = bb.FlatAppearance.MouseDownBackColor;
+        }
+        ComboBox cb = c as ComboBox;
+        if (cb != null) o.Flat = cb.FlatStyle;
+        LinkLabel ll = c as LinkLabel;
+        if (ll != null) { o.Link = ll.LinkColor; o.ActiveLink = ll.ActiveLinkColor; o.Visited = ll.VisitedLinkColor; o.DisabledLink = ll.DisabledLinkColor; }
+        else if (c is Label) {
+            int fc = c.ForeColor.ToArgb();
+            if (fc == SystemColors.GrayText.ToArgb()) o.Role = "hint";
+            else if (fc == Color.Firebrick.ToArgb() || fc == Color.Red.ToArgb()) o.Role = "error";
+        }
+        return o;
+    }
+
+    static void Style(Control c, Orig o) {
+        if (c is Form) {
+            c.BackColor = dark ? Back : o.Back; c.ForeColor = dark ? Fore : o.Fore;
+            return;
+        }
+        Button b = c as Button;
+        if (b != null) {
+            if (dark) {
+                b.FlatStyle = FlatStyle.Flat; b.UseVisualStyleBackColor = false;
+                b.BackColor = ButtonBack; b.ForeColor = Fore;
+                b.FlatAppearance.BorderColor = Border; b.FlatAppearance.MouseOverBackColor = ButtonHover; b.FlatAppearance.MouseDownBackColor = ButtonDown;
+            } else {
+                b.FlatStyle = o.Flat; b.BackColor = o.Back; b.ForeColor = o.Fore;
+                b.FlatAppearance.BorderColor = o.Border; b.FlatAppearance.MouseOverBackColor = o.Over; b.FlatAppearance.MouseDownBackColor = o.Down;
+                b.UseVisualStyleBackColor = o.VisualBack;   // after BackColor, which clears it
+            }
+            return;
+        }
+        LinkLabel ll = c as LinkLabel;
+        if (ll != null) {
+            ll.LinkColor = dark ? Link : o.Link; ll.ActiveLinkColor = dark ? Link : o.ActiveLink;
+            ll.VisitedLinkColor = dark ? Link : o.Visited; ll.DisabledLinkColor = dark ? Disabled : o.DisabledLink;
+            return;
+        }
+        if (c is Label) {
+            if (o.Role == "hint") c.ForeColor = dark ? Hint : o.Fore;
+            else if (o.Role == "error") c.ForeColor = dark ? Error : o.Fore;
+            return;   // other labels, check boxes, panels and group boxes inherit the form's colors
+        }
+        ComboBox cb = c as ComboBox;
+        if (cb != null) {
+            cb.FlatStyle = dark ? FlatStyle.Flat : o.Flat;
+            cb.BackColor = dark ? Field : o.Back; cb.ForeColor = dark ? FieldFore : o.Fore;
+            return;
+        }
+        if (c is TextBoxBase || c is ListBox || c is ListView || c is TreeView || c is UpDownBase) {
+            c.BackColor = dark ? Field : o.Back; c.ForeColor = dark ? FieldFore : o.Fore;
+            ListView lv = c as ListView;
+            if (lv != null) {
+                if (!o.HeaderHooked) {
+                    lv.DrawColumnHeader += OnDrawHeader; lv.DrawItem += OnDrawItem; lv.DrawSubItem += OnDrawSubItem;
+                    o.HeaderHooked = true;
+                }
+                lv.OwnerDraw = dark;   // only the column headers are drawn by us; rows stay native
+            }
+            if (!(c is TextBox) || ((TextBox)c).Multiline) Native(c, o);
+        }
+    }
+
+    // Dark scroll bars (and the list view's header strip) through the native "DarkMode_Explorer" theme, where Windows offers it.
+    static void Native(Control c, Orig o) {
+        if (Build < 17763) return;
+        if (!o.NativeHooked) { c.HandleCreated += OnNativeHandleCreated; o.NativeHooked = true; }
+        if (c.IsHandleCreated) NativeTheme(c);
+    }
+    static void OnNativeHandleCreated(object sender, EventArgs e) { Control c = sender as Control; if (c != null) NativeTheme(c); }
+    static void NativeTheme(Control c) {
+        try {
+            IntPtr h = c.Handle;
+            try { AllowDarkModeForWindow(h, dark); } catch { }
+            SetWindowTheme(h, dark ? "DarkMode_Explorer" : null, null);
+            if (c is ListView) {
+                IntPtr hdr = SendMessage(h, 0x101F, IntPtr.Zero, IntPtr.Zero);   // LVM_GETHEADER
+                if (hdr != IntPtr.Zero) {
+                    try { AllowDarkModeForWindow(hdr, dark); } catch { }
+                    SetWindowTheme(hdr, dark ? "DarkMode_ItemsView" : null, null);
+                }
+            }
+        } catch { }
+    }
+
+    static void OnDrawHeader(object sender, DrawListViewColumnHeaderEventArgs e) {
+        if (!dark) { e.DrawDefault = true; return; }
+        Rectangle r = e.Bounds;
+        using (SolidBrush bg = new SolidBrush(HeaderBack)) e.Graphics.FillRectangle(bg, r);
+        using (Pen p = new Pen(HeaderLine)) {
+            e.Graphics.DrawLine(p, r.Right - 1, r.Top + 3, r.Right - 1, r.Bottom - 4);
+            e.Graphics.DrawLine(p, r.Left, r.Bottom - 1, r.Right, r.Bottom - 1);
+        }
+        TextFormatFlags f = TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix;
+        HorizontalAlignment a = e.Header == null ? HorizontalAlignment.Left : e.Header.TextAlign;
+        if (a == HorizontalAlignment.Right) f |= TextFormatFlags.Right; else if (a == HorizontalAlignment.Center) f |= TextFormatFlags.HorizontalCenter; else f |= TextFormatFlags.Left;
+        string text = e.Header == null ? "" : e.Header.Text;
+        TextRenderer.DrawText(e.Graphics, text, e.Font, Rectangle.Inflate(r, -6, 0), Fore, f);
+    }
+    static void OnDrawItem(object sender, DrawListViewItemEventArgs e) { e.DrawDefault = true; }
+    static void OnDrawSubItem(object sender, DrawListViewSubItemEventArgs e) { e.DrawDefault = true; }
+
+    static void OnTipDraw(object sender, DrawToolTipEventArgs e) {
+        if (!dark) { e.DrawBackground(); e.DrawBorder(); e.DrawText(); return; }
+        Rectangle r = e.Bounds;
+        using (SolidBrush bg = new SolidBrush(MenuBack)) e.Graphics.FillRectangle(bg, r);
+        using (Pen p = new Pen(Border)) e.Graphics.DrawRectangle(p, r.X, r.Y, r.Width - 1, r.Height - 1);
+        Rectangle tr = new Rectangle(r.X + 3, r.Y, Math.Max(0, r.Width - 4), r.Height);
+        TextRenderer.DrawText(e.Graphics, e.ToolTipText, e.Font, tr, Fore, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+    }
+}
+
+public class WoDarkColors : ProfessionalColorTable {
+    public WoDarkColors() { UseSystemColors = false; }
+    public override Color ToolStripDropDownBackground { get { return WoTheme.MenuBack; } }
+    public override Color ImageMarginGradientBegin { get { return WoTheme.MenuBack; } }
+    public override Color ImageMarginGradientMiddle { get { return WoTheme.MenuBack; } }
+    public override Color ImageMarginGradientEnd { get { return WoTheme.MenuBack; } }
+    public override Color MenuBorder { get { return WoTheme.Border; } }
+    public override Color MenuItemBorder { get { return WoTheme.MenuHover; } }
+    public override Color MenuItemSelected { get { return WoTheme.MenuHover; } }
+    public override Color MenuItemSelectedGradientBegin { get { return WoTheme.MenuHover; } }
+    public override Color MenuItemSelectedGradientEnd { get { return WoTheme.MenuHover; } }
+    public override Color MenuItemPressedGradientBegin { get { return WoTheme.MenuHover; } }
+    public override Color MenuItemPressedGradientMiddle { get { return WoTheme.MenuHover; } }
+    public override Color MenuItemPressedGradientEnd { get { return WoTheme.MenuHover; } }
+    public override Color SeparatorDark { get { return WoTheme.Border; } }
+    public override Color SeparatorLight { get { return WoTheme.MenuBack; } }
+    public override Color CheckBackground { get { return WoTheme.CheckBack; } }
+    public override Color CheckSelectedBackground { get { return WoTheme.CheckBack; } }
+    public override Color CheckPressedBackground { get { return WoTheme.CheckBack; } }
+    public override Color ToolStripBorder { get { return WoTheme.Border; } }
+    public override Color ToolStripGradientBegin { get { return WoTheme.Back; } }
+    public override Color ToolStripGradientMiddle { get { return WoTheme.Back; } }
+    public override Color ToolStripGradientEnd { get { return WoTheme.Back; } }
+}
+
+public class WoDarkRenderer : ToolStripProfessionalRenderer {
+    public WoDarkRenderer() : base(new WoDarkColors()) { RoundedEdges = false; }
+    protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e) {
+        e.TextColor = (e.Item != null && !e.Item.Enabled) ? WoTheme.Disabled : WoTheme.Fore;
+        base.OnRenderItemText(e);
+    }
+    protected override void OnRenderArrow(ToolStripArrowRenderEventArgs e) {
+        e.ArrowColor = (e.Item != null && !e.Item.Enabled) ? WoTheme.Disabled : WoTheme.Fore;
+        base.OnRenderArrow(e);
+    }
+    // The stock check mark is a black bitmap; draw a light one instead.
+    protected override void OnRenderItemCheck(ToolStripItemImageRenderEventArgs e) {
+        Rectangle r = e.ImageRectangle;
+        if (r.Width <= 0 || r.Height <= 0) { base.OnRenderItemCheck(e); return; }
+        r = Rectangle.Inflate(r, 1, 1);
+        using (SolidBrush b = new SolidBrush(WoTheme.CheckBack)) e.Graphics.FillRectangle(b, r);
+        SmoothingMode old = e.Graphics.SmoothingMode;
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        using (Pen p = new Pen(WoTheme.Fore, 2f)) {
+            e.Graphics.DrawLines(p, new PointF[] {
+                new PointF(r.Left + r.Width * 0.25f, r.Top + r.Height * 0.52f),
+                new PointF(r.Left + r.Width * 0.43f, r.Top + r.Height * 0.70f),
+                new PointF(r.Left + r.Width * 0.76f, r.Top + r.Height * 0.32f) });
+        }
+        e.Graphics.SmoothingMode = old;
+    }
+}
+'@
+        [WoTheme]::Init($Mode)
+    } catch { Write-AppLog "Theme support unavailable, the windows stay light: $_" }
+}
+
+# A new Form registered with the theme (title bar and controls follow light/dark). Use instead of New-Object ...Form.
+function New-ThemedForm {
+    $f = New-Object System.Windows.Forms.Form
+    if ('WoTheme' -as [type]) { [void][WoTheme]::Track($f) }
+    $f
+}
+
+# A new ToolTip drawn in the theme's colors. Use instead of New-Object ...ToolTip.
+function New-ThemedToolTip {
+    $t = New-Object System.Windows.Forms.ToolTip
+    if ('WoTheme' -as [type]) { [void][WoTheme]::Tip($t) }
+    $t
+}
+
 # ---------------------------------------------------------------- branding images, splash, About
 # Reads an image from assets\ into memory (so the file is never locked). Returns $null if it is missing or unreadable.
 function Get-ArtImage([string]$Name) {
@@ -1412,10 +1817,10 @@ function Show-AboutDialog($OwnerForm) {
     Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing
     $art = Get-ArtImage 'splash.jpg'
     $w = 640; $h = 0; if ($art) { $h = $art.Height }
-    $dlg = New-Object System.Windows.Forms.Form
+    $dlg = New-ThemedForm
     $dlg.Text = 'About Workspace Wrangler'; $dlg.ClientSize = New-Object System.Drawing.Size(($w + 24), ($h + 130))
     $dlg.FormBorderStyle = 'FixedDialog'; $dlg.MaximizeBox = $false; $dlg.MinimizeBox = $false; $dlg.StartPosition = 'CenterParent'
-    $tip = New-Object System.Windows.Forms.ToolTip
+    $tip = New-ThemedToolTip
     $y = 12
     if ($art) {
         $pic = New-Object System.Windows.Forms.PictureBox
@@ -1522,7 +1927,7 @@ function Set-ClaudeRetention([int]$Days) {
 
 function Show-DataHealthDialog($OwnerForm) {
     Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing
-    $dlg = New-Object System.Windows.Forms.Form
+    $dlg = New-ThemedForm
     $dlg.Text = 'Claude Code data health'; $dlg.ClientSize = New-Object System.Drawing.Size(640, 430)
     $dlg.FormBorderStyle = 'FixedDialog'; $dlg.MaximizeBox = $false; $dlg.MinimizeBox = $false; $dlg.StartPosition = 'CenterParent'
     $box = New-Object System.Windows.Forms.TextBox
@@ -1533,7 +1938,7 @@ function Show-DataHealthDialog($OwnerForm) {
     $bClose = New-Object System.Windows.Forms.Button; $bClose.Text = 'Close'; $bClose.Location = New-Object System.Drawing.Point(538, 384); $bClose.Size = New-Object System.Drawing.Size(90, 28)
     $bClose.DialogResult = [System.Windows.Forms.DialogResult]::Cancel; $dlg.CancelButton = $bClose
     $dlg.Controls.AddRange(@($box, $bSet, $bCopy, $bOpen, $bClose))
-    $tip = New-Object System.Windows.Forms.ToolTip
+    $tip = New-ThemedToolTip
     $tip.SetToolTip($bSet, 'Adds "cleanupPeriodDays": 3650 to ~\.claude\settings.json after asking, keeping a settings.json.bak backup. Nothing else is changed.')
     $tip.SetToolTip($bCopy, 'Copy the one-line setting to paste into settings.json yourself.')
     $refresh = {
@@ -1609,11 +2014,12 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
         ConfigExample = Join-Path $PSScriptRoot 'config.example.json'
         PresetFile = Join-Path $ConfigDir 'presets.json'
         PresetExample = Join-Path $PSScriptRoot 'presets.example.json'
+        Themed  = [bool]('WoTheme' -as [type])   # light/dark support loaded (Initialize-Theme); colors then come from [WoTheme]
     }
     foreach ($r in $Rows) { if ($r.RemoteUrl) { $ctx.Remote[$r.Path] = $r.RemoteUrl } }
     foreach ($p in $Preselect)    { [void]$ctx.Checked.Add($p) }
 
-    $form = New-Object System.Windows.Forms.Form
+    $form = New-ThemedForm
     $iconFile = Join-Path $PSScriptRoot 'assets\app.ico'
     $form.Text = "Workspace Wrangler v$($Update.Current)"; if (Test-Path -LiteralPath $iconFile) { try { $form.Icon = New-Object System.Drawing.Icon($iconFile) } catch { } }; $form.ClientSize = New-Object System.Drawing.Size(1150, 628)
     $form.StartPosition = 'CenterScreen'; $form.KeyPreview = $true
@@ -1658,7 +2064,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
     )
     $ctx.RemoteCol = 7
     if ($ctx.CostOn) { $colHelp += "Cost: estimated API-equivalent cost of this project's Claude Code sessions so far (from Claude Code's local session files).`nHover a value for the breakdown. '~' = some models are not in the price table yet." }
-    $tip = New-Object System.Windows.Forms.ToolTip
+    $tip = New-ThemedToolTip
     $ctx.TipCol = -1
     $lv.Add_MouseMove({
         param($s, $e)
@@ -1808,12 +2214,12 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
     $form.AcceptButton = $btnGo; $form.CancelButton = $btnClose
     $form.Controls.AddRange(@($lbl, $filterBox, $stateBox, $btnNew, $hint, $updLink, $lv, $status, $help, $btnSettings, $btnIde, $btnGit, $btnArrange, $btnRefresh, $btnSwitch, $btnGo, $btnClose))
 
-    $ctrlTip = New-Object System.Windows.Forms.ToolTip
+    $ctrlTip = New-ThemedToolTip
     $ctrlTip.InitialDelay = 400; $ctrlTip.AutoPopDelay = 12000
     $ctrlTip.SetToolTip($btnNew, 'Create a new project folder in your projects folder: optionally run git init, add a README and open it in your IDE. The list reloads with it pre-checked.')
     $ctrlTip.SetToolTip($filterBox, 'Type to narrow the list by project name, path or branch. Selected projects stay selected while you filter.')
     $ctrlTip.SetToolTip($stateBox, 'Show only projects in a given state: dirty (uncommitted changes), clean, open in a terminal, not open, or not a git repo. Combines with the text filter. Click a column header to sort.')
-    $ctrlTip.SetToolTip($btnSettings, 'Edit config.json (global defaults) or presets.json (per-project overrides) in your default editor (changes apply the next time the picker starts), or save the positions of your open project windows so Launch restores them.')
+    $ctrlTip.SetToolTip($btnSettings, 'Edit config.json (global defaults) or presets.json (per-project overrides) in your default editor (changes apply the next time the picker starts), or save the positions of your open project windows so Launch restores them. Theme switches between light and dark.')
     $ctrlTip.SetToolTip($btnIde, 'Open the selected projects in your IDE, one new window per project. Visual Studio Code by default; set "ide" (and "ideArgs") in config.json to use another.')
     $ctrlTip.SetToolTip($btnGit, 'Git actions for the selected project: open its repository in your browser, initialize a local git repository, or create a new GitHub repository (in an organization you pick) and add it as origin. Also on the right-click menu of a row.')
     $ctrlTip.SetToolTip($btnArrange, 'Arrange the windows of all open projects now. Choose cascade, grid, side by side or stacked, or reset windows to the default size. Windows with a saved spot (Settings > Save window layout) go there; hold Shift while choosing to ignore saved spots.')
@@ -1824,7 +2230,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
     $ctrlTip.SetToolTip($help, 'Open this project on GitHub, its open issues, or the new-issue page.')
     $ctrlTip.SetToolTip($updLink, "What's new: read the release notes.  Update now: install the new version in place (settings are kept) and restart the picker.  Skip this version: hide this notice until a newer release appears.")
 
-    $green = [System.Drawing.Color]::FromArgb(222, 245, 226)
+    $green = [System.Drawing.Color]::FromArgb(222, 245, 226)   # light-only fallback when theme support did not load
 
     # One selection, shown two ways: a row is selected exactly when its box is ticked ($ctx.Checked is the single source of truth, so
     # it also survives filtering and sorting). Ticking highlights the row; Ctrl/Shift-clicking rows ticks them. Every action uses this set.
@@ -1846,6 +2252,9 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
     # Rebuild the list (newest activity first); keeps the selection.
     $fill = {
         $ctx.Rebuilding = $true
+        # Cell colors for the current theme (the light values are the original ones).
+        if ($ctx.Themed) { $cField = [WoTheme]::Field; $cText = [WoTheme]::FieldFore; $cOpen = [WoTheme]::OpenRow; $cWarn = [WoTheme]::Warn; $cLink = [WoTheme]::Link }
+        else { $cField = [System.Drawing.SystemColors]::Window; $cText = [System.Drawing.SystemColors]::WindowText; $cOpen = $green; $cWarn = [System.Drawing.Color]::FromArgb(196, 98, 0); $cLink = [System.Drawing.Color]::FromArgb(0, 102, 204) }
         $sel = @($lv.SelectedItems | ForEach-Object { [string]$_.Tag })
         $lv.BeginUpdate(); $lv.Items.Clear()
         $f = $filterBox.Text.Trim()
@@ -1883,12 +2292,12 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
             $it.Tag = $r.Path
             # Per-cell styling so the Remote cell can look like a link; the green "open" tint is applied to every cell.
             $it.UseItemStyleForSubItems = $false
-            $bg = [System.Drawing.SystemColors]::Window
-            if ($isOpen) { $bg = $green }
-            foreach ($sub in $it.SubItems) { $sub.BackColor = $bg }
-            if ($r.BranchHint) { $it.SubItems[5].ForeColor = [System.Drawing.Color]::FromArgb(196, 98, 0) }
+            $bg = $cField
+            if ($isOpen) { $bg = $cOpen }
+            foreach ($sub in $it.SubItems) { $sub.BackColor = $bg; $sub.ForeColor = $cText }
+            if ($r.BranchHint) { $it.SubItems[5].ForeColor = $cWarn }
             if ($gh) {
-                $it.SubItems[$ctx.RemoteCol].ForeColor = [System.Drawing.Color]::FromArgb(0, 102, 204)
+                $it.SubItems[$ctx.RemoteCol].ForeColor = $cLink
                 $it.SubItems[$ctx.RemoteCol].Font =New-Object System.Drawing.Font($lv.Font, [System.Drawing.FontStyle]::Underline)
             }
             $it.Checked = $ctx.Checked.Contains($r.Path)
@@ -2271,6 +2680,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
     $miRoot = $menu.Items.Add('Projects folders...')
     $miLog = $menu.Items.Add('Changelog (what changed in each version)')
     $miCost = $menu.Items.Add('Show project cost'); $miCost.CheckOnClick = $false
+    $miTheme = New-Object System.Windows.Forms.ToolStripMenuItem 'Theme'; [void]$menu.Items.Add($miTheme)
     $miHealth = $menu.Items.Add('Claude Code data health...')
     $miDiag = $menu.Items.Add('Copy diagnostics (for an issue report)')
     $miLogOpen = $menu.Items.Add('Open the log')
@@ -2303,6 +2713,33 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
     $miCost.Checked = $ctx.CostOn
     $miCost.ToolTipText = "Add a Cost column: each project's estimated Claude Code cost, from Claude Code's local session files (read-only; the picker restarts)."
     $miCost.Add_Click({ if ($Actions -and $Actions.SetCost) { & $Actions.SetCost (-not $ctx.CostOn); & $Update.Restart; $form.Close() } }.GetNewClosure())
+    # Settings > Theme: Match Windows / Light / Dark. Applies at once (no restart) and is saved as "theme" in config.json.
+    $miTheme.ToolTipText = 'Light or dark windows. Match Windows follows Settings > Personalization > Colors > app mode and switches when you change it there.'
+    $ctx.ThemeItems = @{}
+    $curTheme = 'system'; if ($ctx.Themed) { $curTheme = [WoTheme]::Mode }
+    $setTheme = {
+        param($v)
+        if ($ctx.Themed) { [WoTheme]::SetMode([string]$v) }
+        if ($Actions -and $Actions.SetTheme) { & $Actions.SetTheme ([string]$v) }
+        foreach ($k in @($ctx.ThemeItems.Keys)) { $ctx.ThemeItems[$k].Checked = ($k -eq $v) }
+        $now = 'light'; if ($ctx.Themed -and [WoTheme]::Dark) { $now = 'dark' }
+        if ($v -eq 'system') { $status.Text = "Theme: matches Windows (now $now)." } else { $status.Text = "Theme: $v." }
+    }.GetNewClosure()
+    foreach ($t in @(@('system', 'Match Windows'), @('light', 'Light'), @('dark', 'Dark'))) {
+        $it = New-Object System.Windows.Forms.ToolStripMenuItem $t[1]
+        $it.Tag = @{ Fn = $setTheme; A = @($t[0]) }; $it.Add_Click($menuClick)
+        $it.Checked = ($t[0] -eq $curTheme)
+        [void]$miTheme.DropDownItems.Add($it); $ctx.ThemeItems[$t[0]] = $it
+    }
+    if (-not $ctx.Themed) { $miTheme.Enabled = $false; $miTheme.ToolTipText = 'Theme support could not load on this computer (see the log); the windows stay light.' }
+    # When the theme flips (Settings > Theme, or Windows' app mode while on Match Windows), redraw the list's cell colors.
+    $onThemeChanged = [System.EventHandler]({
+        param($s, $e)
+        $top = $null; if ($lv.TopItem) { $top = [string]$lv.TopItem.Tag }
+        & $fill
+        if ($top) { foreach ($i in $lv.Items) { if ([string]$i.Tag -eq $top) { $lv.TopItem = $i; break } } }
+    }.GetNewClosure())
+    if ($ctx.Themed) { [WoTheme]::add_Changed($onThemeChanged) }
     $miHealth.ToolTipText = 'Check whether Claude Code keeps its session history long enough for cost and usage review, and what telemetry is on.'
     $miHealth.Add_Click({ if ($Actions -and $Actions.Health) { & $Actions.Health $form } }.GetNewClosure())
     $miDiag.ToolTipText = 'Copy versions and the recent log (user name and home folder masked) to the clipboard, ready to paste into a GitHub issue.'
@@ -2391,6 +2828,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
     if ($ctx.HotkeyNote) { $status.Text = $ctx.HotkeyNote }
     Close-Splash
     [void]$form.ShowDialog()
+    if ($ctx.Themed) { [WoTheme]::remove_Changed($onThemeChanged) }
     if ($hk) { try { $hk.Unregister() } catch { } }
     $timer.Dispose(); $bgTimer.Dispose(); $updTimer.Dispose()
     $null
@@ -2539,7 +2977,7 @@ function Test-ProjectName([string]$Name, [string]$ParentDir, [string]$Current = 
 # Dialog: name for a new project (+ git init / README / open in IDE). Returns $null or { Name, GitInit, Readme, OpenIde }.
 function Show-NewProjectDialog($OwnerForm, [string[]]$Parents) {
     $ParentDir = [string]@($Parents)[0]
-    $dlg = New-Object System.Windows.Forms.Form
+    $dlg = New-ThemedForm
     $dlg.Text = 'New project'; $dlg.ClientSize = New-Object System.Drawing.Size(470, 262)
     $dlg.FormBorderStyle = 'FixedDialog'; $dlg.MaximizeBox = $false; $dlg.MinimizeBox = $false; $dlg.StartPosition = 'CenterParent'
     $l1 = New-Object System.Windows.Forms.Label; $l1.Text = 'Project name:'; $l1.AutoSize = $true; $l1.Location = New-Object System.Drawing.Point(12, 16)
@@ -2563,7 +3001,7 @@ function Show-NewProjectDialog($OwnerForm, [string[]]$Parents) {
     $ok.DialogResult = [System.Windows.Forms.DialogResult]::OK
     $dlg.AcceptButton = $ok; $dlg.CancelButton = $cancel
     $dlg.Controls.AddRange(@($l1, $txt, $naming, $where, $chkGit, $chkRead, $chkIde, $err, $ok, $cancel))
-    $tip = New-Object System.Windows.Forms.ToolTip
+    $tip = New-ThemedToolTip
     $tip.SetToolTip($txt, 'The new folder name (letters, digits, "-" and "_" are safest). A noun-verb name such as page-distill is suggested, not required.')
     $tip.SetToolTip($chkGit, 'Run git init in the new folder so it is a repository from the start.')
     $tip.SetToolTip($chkRead, 'Create a README.md containing the project name as a heading.')
@@ -2596,7 +3034,7 @@ function Show-NewProjectDialog($OwnerForm, [string[]]$Parents) {
 function Show-RenameDialog($OwnerForm, $Row) {
     $parent = Split-Path -Parent $Row.Path
     $old = $Row.Name
-    $dlg = New-Object System.Windows.Forms.Form
+    $dlg = New-ThemedForm
     $dlg.Text = "Rename $old"; $dlg.ClientSize = New-Object System.Drawing.Size(470, 366)
     $dlg.FormBorderStyle = 'FixedDialog'; $dlg.MaximizeBox = $false; $dlg.MinimizeBox = $false; $dlg.StartPosition = 'CenterParent'
     $l1 = New-Object System.Windows.Forms.Label; $l1.Text = 'New name:'; $l1.AutoSize = $true; $l1.Location = New-Object System.Drawing.Point(12, 16)
@@ -2615,7 +3053,7 @@ function Show-RenameDialog($OwnerForm, $Row) {
     $ok.DialogResult = [System.Windows.Forms.DialogResult]::OK
     $dlg.AcceptButton = $ok; $dlg.CancelButton = $cancel
     $dlg.Controls.AddRange(@($l1, $txt, $naming, $err, $info, $chk, $note, $ok, $cancel))
-    $tip = New-Object System.Windows.Forms.ToolTip
+    $tip = New-ThemedToolTip
     $tip.SetToolTip($txt, 'The new folder name. A noun-verb name such as page-distill is suggested, not required.')
     $tip.SetToolTip($chk, 'Claude cannot know the folder was renamed. When ticked, this message is sent as the first message of the next Claude session you launch for the project (once), so it can fix references to the old name or path.')
     $tip.SetToolTip($note, 'Edit the message if you like. It is sent to Claude as your first message on the next launch of this project.')
@@ -2744,7 +3182,7 @@ function Save-ProjectPreset([string]$Name, [hashtable]$Set) {
 # Dialog: the per-project launch options. Returns $null or { ClaudeArgs, Shell, Diff, Startup, Urls, Color } (Shell/Diff: $null = default).
 function Show-LaunchOptionsDialog($OwnerForm, $Row) {
     $cur = Get-Preset $Row.Name
-    $dlg = New-Object System.Windows.Forms.Form
+    $dlg = New-ThemedForm
     $dlg.Text = "Launch options for $($Row.Name)"; $dlg.ClientSize = New-Object System.Drawing.Size(540, 420)
     $dlg.FormBorderStyle = 'FixedDialog'; $dlg.MaximizeBox = $false; $dlg.MinimizeBox = $false; $dlg.StartPosition = 'CenterParent'
     $mkLabel = { param($t, $y) $l = New-Object System.Windows.Forms.Label; $l.Text = $t; $l.AutoSize = $true; $l.Location = New-Object System.Drawing.Point(12, ($y + 4)); $l }
@@ -2759,7 +3197,9 @@ function Show-LaunchOptionsDialog($OwnerForm, $Row) {
     $txtUrls.Location = New-Object System.Drawing.Point(160, 140); $txtUrls.Size = New-Object System.Drawing.Size(370, 96); $txtUrls.Text = (@($cur.urls | Where-Object { $_ }) -join "`r`n")
     $swatch = New-Object System.Windows.Forms.Panel; $swatch.Location = New-Object System.Drawing.Point(160, 248); $swatch.Size = New-Object System.Drawing.Size(40, 24); $swatch.BorderStyle = 'FixedSingle'
     $st = @{ Color = [string]$cur.tabColor }
-    $paint = { try { if ($st.Color) { $swatch.BackColor = [System.Drawing.ColorTranslator]::FromHtml($st.Color) } else { $swatch.BackColor = [System.Drawing.SystemColors.Control] } } catch { $swatch.BackColor = [System.Drawing.SystemColors.Control] } }.GetNewClosure()
+    if ('WoTheme' -as [type]) { [WoTheme]::Keep($swatch) }   # the swatch shows the tab color in both themes
+    # No color = the dialog's own background (ResetBackColor follows light/dark).
+    $paint = { try { if ($st.Color) { $swatch.BackColor = [System.Drawing.ColorTranslator]::FromHtml($st.Color) } else { $swatch.ResetBackColor() } } catch { $swatch.ResetBackColor() } }.GetNewClosure()
     $btnColor = New-Object System.Windows.Forms.Button; $btnColor.Text = 'Choose...'; $btnColor.Location = New-Object System.Drawing.Point(208, 246); $btnColor.Size = New-Object System.Drawing.Size(90, 28)
     $btnClear = New-Object System.Windows.Forms.Button; $btnClear.Text = 'Automatic'; $btnClear.Location = New-Object System.Drawing.Point(304, 246); $btnClear.Size = New-Object System.Drawing.Size(90, 28)
     $adv = New-Object System.Windows.Forms.Label; $adv.Location = New-Object System.Drawing.Point(12, 292); $adv.Size = New-Object System.Drawing.Size(516, 52)
@@ -2772,7 +3212,7 @@ function Show-LaunchOptionsDialog($OwnerForm, $Row) {
     $dlg.AcceptButton = $null; $dlg.CancelButton = $cancel
     $dlg.Controls.AddRange(@((& $mkLabel 'Claude arguments:' 12), $txtArgs, (& $mkLabel 'Shell tab:' 44), $cboShell, (& $mkLabel 'Git status summary:' 76), $cboDiff, (& $mkLabel 'Shell startup command:' 108), $txtStart,
         (& $mkLabel 'Open these URLs:' 140), $txtUrls, (& $mkLabel 'Tab color:' 248), $swatch, $btnColor, $btnClear, $adv, $btnFile, $err, $ok, $cancel))
-    $tip = New-Object System.Windows.Forms.ToolTip
+    $tip = New-ThemedToolTip
     $tip.SetToolTip($txtArgs, 'Extra arguments for claude in this project only, e.g. --model opus or --permission-mode plan (no double quotes). Replaces claudeArgs from config.json.')
     $tip.SetToolTip($cboShell, 'Whether this project gets a shell tab next to its Claude tab.')
     $tip.SetToolTip($cboDiff, 'Whether the shell tab starts by showing git status and a diff summary (ignored when a startup command is set).')
@@ -2931,7 +3371,7 @@ function Set-ProjectRoots([string[]]$Paths) {
 # is clicked. $Current are the folders already in use (listed and checked first).
 function Show-RootDialog([scriptblock]$Scan, [string]$Message, [string[]]$Current = @()) {
     Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing
-    $dlg = New-Object System.Windows.Forms.Form
+    $dlg = New-ThemedForm
     $dlg.Text = 'Workspace Wrangler: where are your projects?'; $dlg.ClientSize = New-Object System.Drawing.Size(560, 392)
     $dlg.FormBorderStyle = 'FixedDialog'; $dlg.MaximizeBox = $false; $dlg.MinimizeBox = $false; $dlg.StartPosition = 'CenterScreen'
     $lbl = New-Object System.Windows.Forms.Label
@@ -2958,7 +3398,7 @@ function Show-RootDialog([scriptblock]$Scan, [string]$Message, [string[]]$Curren
     $ok.Enabled = $false
     $dlg.AcceptButton = $ok; $dlg.CancelButton = $cancel
     $dlg.Controls.AddRange(@($lbl, $how, $lst, $status, $look, $browse, $ok, $cancel))
-    $tip = New-Object System.Windows.Forms.ToolTip
+    $tip = New-ThemedToolTip
     $tip.SetToolTip($look, 'Optional. Suggest folders based on the project lists of Claude Code and VS Code and on common folder names. Reads folder names only, on this computer.')
     $tip.SetToolTip($lst, 'Check every folder whose subfolders are your projects. Folders already in use are listed first; uncheck one to stop using it.')
     $tip.SetToolTip($browse, 'Add any folder. Each of its subfolders becomes a project in the list.')
@@ -3014,6 +3454,7 @@ if (-not $PSBoundParameters.ContainsKey('Root') -and $Picker -eq 'Forms' -and -n
     elseif (-not $okRoots.Count) { $why = "The projects folder$(if ($Roots.Count -gt 1) { 's' }) $(($Roots | ForEach-Object { '"' + $_ + '"' }) -join ', ') do$(if ($Roots.Count -eq 1) { 'es' }) not exist on this computer." }
     elseif (-not $hasFolders) { $why = 'The projects folders have no folders in them.' }
     if ($why) {
+        Initialize-Theme ([string]$cfg.theme)
         $picks = @(Show-RootDialog { @(Find-ProjectRootCandidates) } $why $okRoots)
         if (-not $picks.Count) { exit 0 }
         $Roots = $picks; Set-ProjectRoots $picks
@@ -3152,7 +3593,7 @@ if ($All) {
     $onArrange = { param($style, $ignoreSaved) Invoke-ArrangeOpen ([string]$style) ([bool]$ignoreSaved) }
     $onGitOp = { param($op, $row, $form, $preset) try { Invoke-PickerGitOp ([string]$op) $row $form ([string]$preset) } catch { Write-AppLog "git $op crashed: $_ $($_.ScriptStackTrace)"; throw } }
     $onCascade = { param($self) Invoke-CascadeFront ([int64]$self) }
-    $actions = @{ Diagnostics = { [System.Windows.Forms.Clipboard]::SetText((Get-DiagnosticsText)) }; OpenLog = { $lf = Join-Path $ConfigDir 'app.log'; if (-not (Test-Path -LiteralPath $lf)) { Set-Content -LiteralPath $lf -Value '' }; Start-Process -FilePath $lf }; CostOn = $script:CostOn; CostAsk = ($null -eq $cfg.showCost -and -not $DryRun); SetCost = { param($v) Set-ConfigValue 'showCost' ([bool]$v) }; Health = { param($owner) Show-DataHealthDialog $owner }; About = { param($owner) Show-AboutDialog $owner }; LaunchOptions = { param($row, $owner) Invoke-PickerLaunchOptions $row $owner }; NewProject = { param($owner) Invoke-PickerNewProject $owner }; RenameProject = { param($row, $owner) Invoke-PickerRenameProject $row $owner }; ChooseRoot = { $p = @(Show-RootDialog { @(Find-ProjectRootCandidates) } 'Choose the folders that hold your projects.' @($Roots)); if ($p.Count) { Set-ProjectRoots $p }; [bool]$p.Count } }
+    $actions = @{ Diagnostics = { [System.Windows.Forms.Clipboard]::SetText((Get-DiagnosticsText)) }; OpenLog = { $lf = Join-Path $ConfigDir 'app.log'; if (-not (Test-Path -LiteralPath $lf)) { Set-Content -LiteralPath $lf -Value '' }; Start-Process -FilePath $lf }; CostOn = $script:CostOn; CostAsk = ($null -eq $cfg.showCost -and -not $DryRun); SetCost = { param($v) Set-ConfigValue 'showCost' ([bool]$v) }; SetTheme = { param($v) Set-ConfigValue 'theme' ([string]$v) }; Health = { param($owner) Show-DataHealthDialog $owner }; About = { param($owner) Show-AboutDialog $owner }; LaunchOptions = { param($row, $owner) Invoke-PickerLaunchOptions $row $owner }; NewProject = { param($owner) Invoke-PickerNewProject $owner }; RenameProject = { param($row, $owner) Invoke-PickerRenameProject $row $owner }; ChooseRoot = { $p = @(Show-RootDialog { @(Find-ProjectRootCandidates) } 'Choose the folders that hold your projects.' @($Roots)); if ($p.Count) { Set-ProjectRoots $p }; [bool]$p.Count } }
     $onIde = { param($paths) Invoke-OpenIde ([string[]]$paths) }
     # Refresh support: rescan the project folders (new/removed projects), then start Get-ProjectFacts for every project in a background
     # runspace and apply the finished result to the rows in place.
@@ -3221,6 +3662,7 @@ if ($All) {
         Restart = { Restart-App }
         Changelog = { Open-Changelog }
     }
+    Initialize-Theme ([string]$cfg.theme)
     [void](Show-FormsPicker $rows $Filter @($state.last) $onLaunch $onSwitch $getRunning ([int]$cfg.refreshSeconds) $onSaveLayout $onArrange $onGitOp $update $onIde $onCascade $actions $onFactsStart $onFactsDone)
     if (-not $DryRun) { Save-State }
 }

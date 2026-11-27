@@ -4,6 +4,18 @@ All notable changes to Workspace Wrangler. Newest first. The picker opens this f
 and offers it after an update. Add new entries under **Unreleased** as you work; rename that heading to the
 version when you release.
 
+## Unreleased
+
+### Added
+- **Dark mode.** The picker and its dialogs (New project, Rename, Launch options, Create remote, Add remote, Projects folders, Data health, About) now follow Windows' app mode (**Settings > Personalization > Colors > Choose your default app mode**): dark backgrounds, text boxes, buttons, list and column headers, menus, tooltips and a dark title bar. Change the Windows setting while the picker is open and it switches without a restart. The list's colors have dark versions too (open projects stay green, the Remote link stays blue, the branch cue stays orange).
+- **Settings > Theme** (Match Windows, Light, Dark), saved as the new `theme` setting in `config.json` (`system`, `light` or `dark`; default `system`). High contrast mode always wins over dark.
+
+### Fixed
+- **Launch options** no longer logs an error when a project has no fixed tab color; the color swatch now shows the dialog's background in that case.
+
+### Known limits
+- Message boxes (confirmations, results) and the folder and color pickers are drawn by Windows and keep its own look. Tooltips on menu items stay light.
+
 ## 1.9.0 - 2026-11-27
 
 ### Added

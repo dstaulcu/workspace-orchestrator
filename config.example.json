@@ -25,6 +25,7 @@
   "gitOpsVisibility": "private",
   "defaultBranch": "main",
   "git": "git",
+  "theme": "system",
   "hotkey": "Ctrl+Alt+W",
   "claudeVariants": [
     { "name": "Plan mode", "args": "--permission-mode plan" }
