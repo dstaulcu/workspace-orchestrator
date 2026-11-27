@@ -8,6 +8,7 @@
     "roots":        { "type": "array", "items": { "type": "string" }, "default": [], "description": "Folders whose immediate subfolders are the projects; several can be used and are merged. Takes precedence over root. Overridden by -Root." },
     "root":         { "type": "string", "default": "C:\\code", "description": "The single projects folder, used when roots is empty. Overridden by -Root." },
     "projects":     { "type": "array", "items": { "type": "string" }, "default": [], "description": "Individual folders that are projects themselves, added in addition to roots. Ignored when -Root is given." },
+    "showCost":     { "type": "boolean", "description": "Show the Cost column (estimated Claude Code cost per project from Claude Code's local session files). Unset = the picker asks once." },
     "top":          { "type": "integer", "minimum": 0, "default": 0, "description": "Show only the N most recent projects; 0 = all. With -All: how many to launch (0 = 15). Overridden by -Top." },
     "ignore":       { "type": "array", "items": { "type": "string" }, "default": [], "description": "Folder names under the project folders to skip. Overridden by -Ignore." },
     "noiseDirs":    { "type": "array", "items": { "type": "string" }, "description": "Directory names skipped when scanning a non-git project for its newest file." },

@@ -62,6 +62,12 @@ For a fresh Claude conversation use right-click > **Launch > Claude session**, o
 
 **Window layout:** new windows are cascaded (`arrangeStyle`: `cascade`, `grid`, `columns`, `rows`). **Settings > Save window layout** remembers where each open project's window is, per monitor setup, and later launches put them back.
 
+## Project cost (optional)
+
+The first time you start the picker it asks whether to show what each project has cost. If you say yes, a **Cost** column appears with each project's estimated API-equivalent Claude Code cost; hover a value for sessions, the last 7 and 30 days and the cost by model. It is computed from the session files Claude Code keeps under `~\.claude\projects` (read-only, local, nothing is sent; subagents included). The Wrangler keeps only token counts and model names in its own `costs.json`, so totals survive Claude Code deleting old sessions. Prices are list prices from `assets/model-prices.json` (add or change models in `~\.config\workspace_app\model-prices.json`); a `~` before an amount means some models are not in the table yet. It is an estimate of what the tokens would cost at API prices, not what a subscription plan bills. Turn it on or off under **Settings > Show project cost**.
+
+**Settings > Claude Code data health...** shows how long Claude Code keeps its session history (default 30 days, then it deletes them) and whether telemetry is on (names only, never endpoints). It recommends raising `cleanupPeriodDays` and, only after you confirm and with a `settings.json.bak` backup, can set that one key. It never changes telemetry.
+
 ## Updates
 
 On startup the picker checks GitHub **releases** (at most daily, without slowing startup; nothing happens until a release is published). When a newer one exists you can click **What's new**, **Update now** (in place, with backup and rollback; settings are kept) or **Skip this version**. After an update it offers to open the [changelog](CHANGELOG.md), which is also under **Settings > Changelog**. Turn the check off with `checkForUpdates: false`.

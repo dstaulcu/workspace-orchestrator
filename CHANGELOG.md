@@ -4,6 +4,16 @@ All notable changes to Workspace Wrangler. Newest first. The picker opens this f
 and offers it after an update. Add new entries under **Unreleased** as you work; rename that heading to the
 version when you release.
 
+## 1.7.0 - 2026-11-27
+
+### Fixed
+- **Creating a GitHub repository with visibility `internal` on a personal account** (which GitHub rejects) is now caught up front with a clear message, and the dialog will not accept it; error text from `gh`, `glab` and `git` no longer carries PowerShell's "At line:..." decoration.
+- **Errors go to a log.** Failed Git actions are written to `app.log` in the settings folder. **Settings > Copy diagnostics** copies versions plus the recent log (user name and home folder masked) for pasting into an issue; **Settings > Open the log** opens it.
+- **Git actions now always report their outcome.** Results of Git > Initialize / Create remote repository / Add existing remote used to appear only in the small status line, which the window overwrites when it is re-activated after a dialog, so a failed or successful action could look like nothing happened. A message box now shows the result (with the first lines of the tool's error and the exact command for a failed GitHub or GitLab create).
+
+### Added
+- **Project cost (opt-in):** an optional Cost column with each project's estimated API-equivalent Claude Code cost, computed from Claude Code's local session files (de-duplicated, subagents included) and kept in the Wrangler's own ledger (`costs.json`) so it survives Claude Code's cleanup. Prices live in `assets/model-prices.json` (override in `~/.config/workspace_app/model-prices.json`). Settings > Show project cost turns it on; Settings > Claude Code data health... shows retention/telemetry status and, after confirmation, can set `cleanupPeriodDays`. `-List` includes `costUsd` when enabled.
+
 ## 1.6.0 - 2026-11-26
 
 ### Changed

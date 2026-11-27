@@ -57,7 +57,7 @@ param(
 )
 
 # ---------------------------------------------------------------- config / state
-$AppVersion = '1.6.0'   # bump on every release; the update check compares it with the latest GitHub release tag
+$AppVersion = '1.7.0'   # bump on every release; the update check compares it with the latest GitHub release tag
 $cfg = @{
     root = 'C:\code'; roots = @(); projects = @(); top = 0; ignore = @()
     noiseDirs = @('.git','node_modules','.venv','venv','__pycache__','dist','build','.next','bin','obj','.idea','.vscode')
@@ -197,6 +197,169 @@ function Test-ClaudeHistory([string]$Dir) {
     # Claude Code stores sessions under ~\.claude\projects\<path with every non-alphanumeric -> '-'>
     $enc = $Dir -replace '[^A-Za-z0-9]', '-'
     return (Test-Path -LiteralPath (Join-Path $env:USERPROFILE ".claude\projects\$enc"))
+}
+
+# ---------------------------------------------------------------- project cost (opt-in; reads Claude Code's local session files)
+# Claude Code logs every API reply (model + token usage) in ~\.claude\projects\<folder>\<session>.jsonl, subagents in <session>\subagents\.
+# We turn that into an estimated API-equivalent cost per project. Token counts are kept in our own ledger (costs.json) so totals survive
+# Claude Code's cleanup of old transcripts; dollars are computed when shown, so the price table can be updated.
+function ConvertTo-PriceModelId([string]$m) { (($m -replace '\[[^\]]*\]$', '') -replace '-\d{8}$', '').ToLowerInvariant() }
+
+function Get-ModelPrices {
+    $p = @{ Models = @{}; WebPer1000 = 10.0; FastMult = 2.0 }
+    foreach ($f in @((Join-Path $PSScriptRoot 'assets\model-prices.json'), (Join-Path $ConfigDir 'model-prices.json'))) {
+        if (-not (Test-Path -LiteralPath $f)) { continue }
+        try {
+            $j = Get-Content -LiteralPath $f -Raw | ConvertFrom-Json
+            if ($j.webSearchPer1000) { $p.WebPer1000 = [double]$j.webSearchPer1000 }
+            if ($j.speedMultiplier -and $j.speedMultiplier.fast) { $p.FastMult = [double]$j.speedMultiplier.fast }
+            foreach ($m in $j.models.PSObject.Properties) { $p.Models[$m.Name.ToLowerInvariant()] = $m.Value }
+        } catch { Write-Warning "Could not read $f : $_" }
+    }
+    $p
+}
+
+function Get-ModelRates($Prices, [string]$Model) {
+    $m = $Prices.Models[(ConvertTo-PriceModelId $Model)]
+    if (-not $m) { return $null }
+    $in = [double]$m.input
+    [pscustomobject]@{
+        In = $in; Out = [double]$m.output
+        Cr  = $(if ($null -ne $m.cacheRead)    { [double]$m.cacheRead }    else { $in * 0.1 })
+        Cw5 = $(if ($null -ne $m.cacheWrite5m) { [double]$m.cacheWrite5m } else { $in * 1.25 })
+        Cw1 = $(if ($null -ne $m.cacheWrite1h) { [double]$m.cacheWrite1h } else { $in * 2 })
+    }
+}
+
+# $c = [in, out, cacheRead, cacheWrite5m, cacheWrite1h, webSearches]
+function Get-UsageCost($Rates, $Prices, $c, [bool]$Fast) {
+    $tok = ([double]$c[0] * $Rates.In + [double]$c[1] * $Rates.Out + [double]$c[2] * $Rates.Cr + [double]$c[3] * $Rates.Cw5 + [double]$c[4] * $Rates.Cw1) / 1e6
+    if ($Fast) { $tok = $tok * $Prices.FastMult }
+    $tok + [double]$c[5] * $Prices.WebPer1000 / 1000
+}
+
+# One transcript -> token counts per day per model. Replies repeat once per content block, so de-duplicate by message id.
+function Read-TranscriptUsage([string]$File) {
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]'
+    $days = @{}; $first = ''; $last = ''
+    foreach ($ln in [IO.File]::ReadLines($File)) {
+        if (-not $ln.Contains('"type":"assistant"')) { continue }
+        $m = [regex]::Match($ln, '"id":"(msg_[^"]+)"')
+        if ($m.Success -and -not $seen.Add($m.Groups[1].Value)) { continue }
+        try { $o = $ln | ConvertFrom-Json } catch { continue }
+        $msg = $o.message; if (-not $msg -or -not $msg.usage) { continue }
+        $model = [string]$msg.model; if (-not $model -or $model.StartsWith('<')) { continue }   # <synthetic> = error placeholder, no usage
+        $u = $msg.usage
+        $ts = [string]$o.timestamp; $day = 'unknown'; if ($ts.Length -ge 10) { $day = $ts.Substring(0, 10); if (-not $first -or $ts -lt $first) { $first = $ts }; if ($ts -gt $last) { $last = $ts } }
+        $cw5 = 0.0; $cw1 = 0.0
+        if ($u.cache_creation) { $cw5 = [double]$u.cache_creation.ephemeral_5m_input_tokens; $cw1 = [double]$u.cache_creation.ephemeral_1h_input_tokens } else { $cw5 = [double]$u.cache_creation_input_tokens }
+        $web = 0.0; if ($u.server_tool_use) { $web = [double]$u.server_tool_use.web_search_requests }
+        $key = $model; if ([string]$u.speed -eq 'fast') { $key = $model + '#fast' }
+        if (-not $days.ContainsKey($day)) { $days[$day] = @{} }
+        if (-not $days[$day].ContainsKey($key)) { $days[$day][$key] = @(0.0, 0.0, 0.0, 0.0, 0.0, 0.0) }
+        $a = $days[$day][$key]
+        $a[0] += [double]$u.input_tokens; $a[1] += [double]$u.output_tokens; $a[2] += [double]$u.cache_read_input_tokens; $a[3] += $cw5; $a[4] += $cw1; $a[5] += $web
+    }
+    @{ Days = $days; First = $first; Last = $last }
+}
+
+# Scan one Claude project folder (runs in a background runspace). $Known maps ledger key -> "length|mtime" so unchanged files are skipped.
+function Get-ProjectCostScan([string]$Dir, [hashtable]$Known) {
+    $enc = Split-Path -Leaf $Dir
+    $files = @(Get-ChildItem -LiteralPath $Dir -Filter *.jsonl -File -ErrorAction SilentlyContinue)
+    foreach ($sd in @(Get-ChildItem -LiteralPath $Dir -Directory -ErrorAction SilentlyContinue)) {
+        $files += @(Get-ChildItem -LiteralPath (Join-Path $sd.FullName 'subagents') -Filter *.jsonl -File -ErrorAction SilentlyContinue)
+    }
+    $present = @(); $recs = @{}
+    foreach ($f in $files) {
+        $rel = $f.FullName.Substring($Dir.Length).TrimStart('\')
+        $key = "$enc\$rel"
+        $sig = '{0}|{1}' -f $f.Length, $f.LastWriteTimeUtc.Ticks
+        $present += $key
+        if ($Known.ContainsKey($key) -and $Known[$key] -eq $sig) { continue }
+        $sid = if ($rel.Contains('\')) { $rel.Split('\')[0] } else { [IO.Path]::GetFileNameWithoutExtension($rel) }
+        try { $u = Read-TranscriptUsage $f.FullName } catch { continue }
+        $recs[$key] = @{ dir = $enc; session = $sid; sig = $sig; first = $u.First; last = $u.Last; days = $u.Days }
+    }
+    @{ Enc = $enc; Present = $present; Records = $recs }
+}
+
+function Read-CostLedger {
+    $l = @{ files = @{} }
+    $f = Join-Path $ConfigDir 'costs.json'
+    if (Test-Path -LiteralPath $f) {
+        try { foreach ($p in (Get-Content -LiteralPath $f -Raw | ConvertFrom-Json).files.PSObject.Properties) { $l.files[$p.Name] = $p.Value } } catch { Write-Warning "Could not read costs.json: $_" }
+    }
+    $l
+}
+function Save-CostLedger($Ledger) {
+    if ($DryRun) { return }
+    try {
+        New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
+        $f = Join-Path $ConfigDir 'costs.json'
+        ([pscustomobject]@{ version = 1; files = $Ledger.files } | ConvertTo-Json -Depth 8 -Compress) | Set-Content -LiteralPath "$f.tmp" -Encoding UTF8
+        Move-Item -LiteralPath "$f.tmp" -Destination $f -Force
+    } catch { Write-Warning "Could not save costs.json: $_" }
+}
+# Fold one project's scan into the ledger; files Claude has since deleted are kept (marked gone) so history survives its cleanup.
+function Merge-CostScan($Ledger, $Scan) {
+    foreach ($k in $Scan.Records.Keys) { $Ledger.files[$k] = (ConvertTo-Json -InputObject $Scan.Records[$k] -Depth 8 -Compress) | ConvertFrom-Json }
+    $prefix = $Scan.Enc + '\'
+    foreach ($k in @($Ledger.files.Keys)) { if ($k.StartsWith($prefix) -and $Scan.Present -notcontains $k) { $Ledger.files[$k] | Add-Member -NotePropertyName gone -NotePropertyValue $true -Force } }
+}
+# Re-key a project's ledger entries after a rename (its Claude history folder is renamed too).
+function Move-CostLedgerDir([string]$OldEnc, [string]$NewEnc) {
+    $l = Read-CostLedger; $n = 0
+    foreach ($k in @($l.files.Keys)) {
+        if ($k.StartsWith($OldEnc + '\')) { $r = $l.files[$k]; $l.files.Remove($k); $r.dir = $NewEnc; $l.files[$NewEnc + '\' + $k.Substring($OldEnc.Length + 1)] = $r; $n++ }
+    }
+    if ($n) { Save-CostLedger $l; if ($script:CostLedger) { $script:CostLedger = $l } }
+}
+
+function Get-ProjectCostSummary($Ledger, [string]$Enc, $Prices) {
+    $tot = 0.0; $c7 = 0.0; $c30 = 0.0; $by = @{}; $unk = @{}; $sess = @{}; $first = ''; $last = ''
+    $today = (Get-Date).Date
+    foreach ($e in $Ledger.files.GetEnumerator()) {
+        $r = $e.Value; if ($r.dir -ne $Enc) { continue }
+        $sess[[string]$r.session] = $true
+        if ($r.first -and (-not $first -or [string]$r.first -lt $first)) { $first = [string]$r.first }
+        if ($r.last -and [string]$r.last -gt $last) { $last = [string]$r.last }
+        foreach ($d in $r.days.PSObject.Properties) {
+            $age = 99999; try { $age = ($today - [datetime]::ParseExact($d.Name, 'yyyy-MM-dd', $null)).TotalDays } catch { }
+            foreach ($m in $d.Value.PSObject.Properties) {
+                $fast = $m.Name.EndsWith('#fast'); $model = $m.Name -replace '#fast$', ''
+                $rates = Get-ModelRates $Prices $model
+                if (-not $rates) { $unk[$model] = $true; continue }
+                $usd = Get-UsageCost $rates $Prices @($m.Value) $fast
+                $tot += $usd; if ($age -lt 7) { $c7 += $usd }; if ($age -lt 30) { $c30 += $usd }
+                $by[$model] = [double]$by[$model] + $usd
+            }
+        }
+    }
+    $tip = ''
+    if ($sess.Count) {
+        $fmt = { param($x) '$' + ([double]$x).ToString('N2') }
+        $lines = @("Estimated API-equivalent cost: $(& $fmt $tot) (all time)")
+        $fd = ''; $ld = ''; if ($first.Length -ge 10) { $fd = $first.Substring(0, 10) }; if ($last.Length -ge 10) { $ld = $last.Substring(0, 10) }
+        $lines += "Sessions: $($sess.Count) (subagents included)   First: $fd   Last: $ld"
+        $lines += "Last 7 days: $(& $fmt $c7)    Last 30 days: $(& $fmt $c30)"
+        $top = @($by.GetEnumerator() | Sort-Object Value -Descending | ForEach-Object { "$($_.Key) $(& $fmt $_.Value)" })
+        if ($top.Count) { $lines += 'By model: ' + ($top -join '; ') }
+        if ($unk.Count) { $lines += "Not priced (add them to model-prices.json): $(@($unk.Keys) -join ', ')" }
+        $lines += "From Claude Code's local session files, kept in the Wrangler's own ledger so it survives Claude's cleanup of old sessions. List prices; a subscription plan is not billed per token."
+        $tip = $lines -join "`n"
+    }
+    [pscustomobject]@{ Sessions = $sess.Count; Total = $tot; Incomplete = ($unk.Count -gt 0); Tip = $tip }
+}
+
+function Set-RowCost($Row) {
+    $Row.CostUsd = $null; $Row.CostText = ''; $Row.CostTip = ''
+    if (-not $script:CostOn) { return }
+    $enc = ([string]$Row.Path) -replace '[^A-Za-z0-9]', '-'
+    $s = Get-ProjectCostSummary $script:CostLedger $enc $script:Prices
+    if (-not $s.Sessions) { return }
+    $Row.CostUsd = $s.Total; $Row.CostTip = $s.Tip
+    $Row.CostText = $(if ($s.Incomplete) { '~' } else { '' }) + '$' + $s.Total.ToString('N2')
 }
 
 # Normalize a git remote (https, ssh://, git://, scp-style) to a browsable https://<host>/<path> URL
@@ -585,6 +748,11 @@ function Test-GitHasCommits([string]$Dir) {
 }
 
 # GitHub accounts the gh user can create repositories under: their own login, then their organizations.
+function Get-GitHubLogin {
+    if (-not (Get-Command gh -ErrorAction SilentlyContinue)) { return '' }
+    try { $me = [string](& gh api user --jq .login 2>$null); if ($LASTEXITCODE -eq 0) { return $me.Trim() } } catch { }
+    ''
+}
 function Get-GitHubOwners {
     if (-not (Get-Command gh -ErrorAction SilentlyContinue)) { return @() }
     $owners = @()
@@ -624,11 +792,11 @@ function Get-GitTargets {
 # After a CLI created the repository: make sure 'origin' points at it, and optionally push. Returns $null or an error line.
 function Set-OriginAndPush([string]$Dir, [string]$Url, [bool]$Push) {
     if (-not [string](& git -C $Dir remote get-url origin 2>$null)) {
-        $o = (& git -C $Dir remote add origin $Url 2>&1 | Out-String).Trim()
+        $o = (& git -C $Dir remote add origin $Url 2>&1 | ForEach-Object { "$_" } | Out-String).Trim()
         if ($LASTEXITCODE -ne 0) { return "The repository was created, but adding it as origin failed: $o" }
     }
     if ($Push) {
-        $o = (& git -C $Dir push -u origin HEAD 2>&1 | Out-String).Trim()
+        $o = (& git -C $Dir push -u origin HEAD 2>&1 | ForEach-Object { "$_" } | Out-String).Trim()
         if ($LASTEXITCODE -ne 0) { return "The repository was created and added as origin, but the push failed: $(($o -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -Last 1))" }
     }
     $null
@@ -636,6 +804,32 @@ function Set-OriginAndPush([string]$Dir, [string]$Url, [bool]$Push) {
 
 # Non-UI core. $Op: 'init' | 'remote'. $Opts (remote): Provider (github|gitlab|azure|url), Owner ('' = your own account),
 # Name, Visibility, Push, Host (gitlab), Url (url). Returns { Ok, Message }.
+# ---------------------------------------------------------------- app log and diagnostics (text for issue reports)
+function Write-AppLog([string]$Message) {
+    try {
+        New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
+        $f = Join-Path $ConfigDir 'app.log'
+        if ((Test-Path -LiteralPath $f) -and (Get-Item -LiteralPath $f).Length -gt 512KB) { $keep = @(Get-Content -LiteralPath $f -Tail 300); Set-Content -LiteralPath $f -Value $keep -Encoding UTF8 }
+        Add-Content -LiteralPath $f -Value ("{0}  v{1}  {2}" -f (Get-Date).ToString('yyyy-MM-dd HH:mm:ss'), $AppVersion, (($Message -replace "\r?\n", ' | ').Trim())) -Encoding UTF8
+    } catch { }
+}
+# Plain text to paste into an issue: versions plus the recent log, with the user name and home folder masked. No settings values, no secrets.
+function Get-DiagnosticsText {
+    $mask = { param($t) $t = [string]$t; $t = $t.Replace([string]$env:USERPROFILE, '%USERPROFILE%'); if ($env:USERNAME) { $t = $t.Replace([string]$env:USERNAME, '<user>') }; $t }
+    $tool = { param($c, $a) try { [string](& $c @a 2>&1 | Select-Object -First 1) } catch { 'not found' } }
+    $lines = @(
+        "Workspace Wrangler v$AppVersion",
+        "OS: $([Environment]::OSVersion.VersionString)   PowerShell: $($PSVersionTable.PSVersion)",
+        "git: $(& $tool 'git' @('--version'))   gh: $(& $tool 'gh' @('--version'))   wt: $(if (Get-Command wt.exe -ErrorAction SilentlyContinue) { 'found' } else { 'not found' })",
+        "Project folders configured: $(@($Roots).Count)   showCost: $($cfg.showCost)",
+        '',
+        'Recent log:'
+    )
+    $f = Join-Path $ConfigDir 'app.log'
+    if (Test-Path -LiteralPath $f) { $lines += @(Get-Content -LiteralPath $f -Tail 60) } else { $lines += '(log is empty)' }
+    & $mask ($lines -join "`r`n")
+}
+
 function Invoke-GitOp([string]$Op, [string]$Dir, $Opts) {
     $r = [pscustomobject]@{ Ok = $false; Message = '' }
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) { $r.Message = 'git was not found on PATH.'; return $r }
@@ -644,7 +838,7 @@ function Invoke-GitOp([string]$Op, [string]$Dir, $Opts) {
         'init' {
             if ($isGit) { $r.Message = "$Dir is already a git repository."; return $r }
             if ($DryRun) { $r.Message = "Dry run: would run 'git init' in $Dir."; return $r }
-            $out = (& git -C $Dir init 2>&1 | Out-String).Trim()
+            $out = (& git -C $Dir init 2>&1 | ForEach-Object { "$_" } | Out-String).Trim()
             if ($LASTEXITCODE -ne 0) { $r.Message = "git init failed: $out"; return $r }
             $r.Ok = $true; $r.Message = "Initialized a local git repository in $Dir."
         }
@@ -660,6 +854,9 @@ function Invoke-GitOp([string]$Op, [string]$Dir, $Opts) {
             if (@('private','internal','public') -notcontains $vis) { $vis = 'private' }
             $name = [string]$Opts.Name; $owner = [string]$Opts.Owner
             $full = $name; if ($owner) { $full = "$owner/$name" }
+            if ($prov -eq 'github' -and $vis -eq 'internal' -and (-not $owner -or ($Opts.PersonalLogin -and $owner -ieq [string]$Opts.PersonalLogin))) {
+                $r.Message = "GitHub 'internal' repositories exist only inside an organization, not on a personal account. Choose 'private' or 'public'."; return $r
+            }
             $push = [bool]$Opts.Push
             # What would run, per provider (also the dry-run text).
             $cmdText = ''
@@ -683,10 +880,10 @@ function Invoke-GitOp([string]$Op, [string]$Dir, $Opts) {
             }
             switch ($prov) {
                 'github' {
-                    $out = (& gh @ghArgs 2>&1 | Out-String).Trim()
+                    $out = (& gh @ghArgs 2>&1 | ForEach-Object { "$_" } | Out-String).Trim()
                     if ($LASTEXITCODE -ne 0) {
-                        $first = ($out -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -First 1)
-                        $r.Message = "Could not create $full on GitHub: $first"; return $r
+                        $first = (($out -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -First 4) -join ' ')
+                        $r.Message = "Could not create $full on GitHub: $first`n`nCommand: $cmdText"; return $r
                     }
                     $r.Ok = $true; $r.Message = "Created $full on GitHub ($vis) and added it as origin."
                     if ($push) { $r.Message += ' Pushed the current branch.' }
@@ -695,11 +892,11 @@ function Invoke-GitOp([string]$Op, [string]$Dir, $Opts) {
                     $hostName = [string]$Opts.Host; if (-not $hostName) { $hostName = 'gitlab.com' }
                     $old = $env:GITLAB_HOST; if ($hostName -ne 'gitlab.com') { $env:GITLAB_HOST = $hostName }
                     Push-Location -LiteralPath $Dir
-                    try { $out = (& glab repo create $full "--$vis" 2>&1 | Out-String).Trim(); $code = $LASTEXITCODE }
+                    try { $out = (& glab repo create $full "--$vis" 2>&1 | ForEach-Object { "$_" } | Out-String).Trim(); $code = $LASTEXITCODE }
                     finally { Pop-Location; $env:GITLAB_HOST = $old }
                     if ($code -ne 0) {
-                        $first = ($out -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -First 1)
-                        $r.Message = "Could not create $full on GitLab: $first"; return $r
+                        $first = (($out -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -First 4) -join ' ')
+                        $r.Message = "Could not create $full on GitLab: $first`n`nCommand: $cmdText"; return $r
                     }
                     $err = Set-OriginAndPush $Dir "https://$hostName/$full.git" $push
                     if ($err) { $r.Message = $err; return $r }
@@ -736,7 +933,7 @@ function Invoke-GitOp([string]$Op, [string]$Dir, $Opts) {
 }
 
 # Dialog for New remote on GitHub. Returns $null (cancelled) or { Owner, Name, Visibility, Push }.
-function Show-NewRemoteDialog($OwnerForm, [string]$ProjectName, [bool]$IsGit, [bool]$HasCommits, [string[]]$Owners, [string]$DefaultOwner, [string]$DefaultVisibility, [string]$Provider = 'github') {
+function Show-NewRemoteDialog($OwnerForm, [string]$ProjectName, [bool]$IsGit, [bool]$HasCommits, [string[]]$Owners, [string]$DefaultOwner, [string]$DefaultVisibility, [string]$Provider = 'github', [string]$PersonalLogin = '') {
     $PL = $GitProviders[$Provider].Label; $OwnerLabel = $GitProviders[$Provider].OwnerLabel; $OwnerHint = $GitProviders[$Provider].OwnerHint
     $dlg = New-Object System.Windows.Forms.Form
     $dlg.Text = "New $PL repository for $ProjectName"; $dlg.ClientSize = New-Object System.Drawing.Size(480, 250)
@@ -798,6 +995,10 @@ function Show-NewRemoteDialog($OwnerForm, [string]$ProjectName, [bool]$IsGit, [b
         $okOwner = switch ($Provider) { 'github' { (-not $ow) -or ($ow -match '^[A-Za-z0-9-]+$') } 'gitlab' { (-not $ow) -or ($ow -match '^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$') } default { $ow -match '^[^/\s]+/[^/\s]+$' } }
         if (-not $okOwner) {
             [void][System.Windows.Forms.MessageBox]::Show($dlg, "That is not a valid $($OwnerLabel.TrimEnd(':')) ($OwnerHint).", "New $PL repository", 'OK', 'Warning')
+            return
+        }
+        if ($Provider -eq 'github' -and [string]$cboVis.SelectedItem -eq 'internal' -and (-not $ow -or ($PersonalLogin -and $ow -ieq $PersonalLogin))) {
+            [void][System.Windows.Forms.MessageBox]::Show($dlg, "GitHub 'internal' repositories exist only inside an organization. For your personal account choose 'private' or 'public'.", "New $PL repository", 'OK', 'Warning')
             return
         }
         $dlg.DialogResult = [System.Windows.Forms.DialogResult]::OK; $dlg.Close()
@@ -871,10 +1072,12 @@ function Invoke-PickerGitOp([string]$Op, $Row, $OwnerForm, [string]$PresetOwner 
             elseif ($pre) { $default = $pre }
             elseif ($prov -eq 'github') { $default = [string]$cfg.gitOpsOrg; if (-not $default -and $owners.Count) { $default = $owners[0] } }
             elseif ($owners.Count) { $default = $owners[0] }
-            $opts = Show-NewRemoteDialog $OwnerForm $Row.Name $isGit ($isGit -and (Test-GitHasCommits $Row.Path)) $owners $default ([string]$cfg.gitOpsVisibility) $prov
+            $login = ''; if ($prov -eq 'github') { $login = Get-GitHubLogin }
+            $opts = Show-NewRemoteDialog $OwnerForm $Row.Name $isGit ($isGit -and (Test-GitHasCommits $Row.Path)) $owners $default ([string]$cfg.gitOpsVisibility) $prov $login
             if (-not $opts) { return 'Cancelled.' }
             $hostName = ($targets | Where-Object { $_.Owner -eq $opts.Owner } | Select-Object -First 1).Host
             $opts | Add-Member -NotePropertyName Host -NotePropertyValue ([string]$hostName)
+            $opts | Add-Member -NotePropertyName PersonalLogin -NotePropertyValue ([string]$login)
             $res = Invoke-GitOp 'remote' $Row.Path $opts
         }
         'addurl' {
@@ -889,6 +1092,7 @@ function Invoke-PickerGitOp([string]$Op, $Row, $OwnerForm, [string]$PresetOwner 
         $Row.IsGit = Test-Path -LiteralPath (Join-Path $Row.Path '.git')
         if ($gi) { $Row.Branch = $gi.Branch; $Row.Dirty = $gi.Dirty; $Row.RemoteUrl = $gi.RemoteUrl }
     }
+    if (-not $res.Ok) { Write-AppLog "git $Op failed in $($Row.Path): $($res.Message)" }
     $res.Message
 }
 
@@ -1116,6 +1320,115 @@ function Show-AboutDialog($OwnerForm) {
     $dlg.Dispose(); if ($art) { $art.Dispose() }
 }
 
+# ---------------------------------------------------------------- Claude Code data health (retention + telemetry)
+# Cost totals and any later usage review depend on Claude Code keeping its session files. It deletes transcripts older than
+# `cleanupPeriodDays` (default 30) at startup. This reads the settings (names and on/off only, never endpoint values) and can, after a
+# confirmation, set that one key.
+function Get-ClaudeDataHealth {
+    $h = @{ File = (Join-Path $env:USERPROFILE '.claude\settings.json'); Retention = $null; Telemetry = $false; Exporters = @(); PromptLogging = $false; Files = 0; Bytes = 0L; Oldest = $null }
+    $envNames = @{}
+    if (Test-Path -LiteralPath $h.File) {
+        try {
+            $j = Get-Content -LiteralPath $h.File -Raw | ConvertFrom-Json
+            if ($j.PSObject.Properties['cleanupPeriodDays']) { $h.Retention = [int]$j.cleanupPeriodDays }
+            if ($j.env) { foreach ($p in $j.env.PSObject.Properties) { $envNames[$p.Name] = [string]$p.Value } }
+        } catch { }
+    }
+    foreach ($n in 'CLAUDE_CODE_ENABLE_TELEMETRY', 'OTEL_METRICS_EXPORTER', 'OTEL_LOGS_EXPORTER', 'OTEL_TRACES_EXPORTER', 'OTEL_EXPORTER_OTLP_ENDPOINT', 'OTEL_LOG_USER_PROMPTS') {
+        if (-not $envNames.ContainsKey($n)) { $v = [Environment]::GetEnvironmentVariable($n); if ($v) { $envNames[$n] = $v } }
+    }
+    $h.Telemetry = ($envNames['CLAUDE_CODE_ENABLE_TELEMETRY'] -eq '1')
+    $h.PromptLogging = ($envNames['OTEL_LOG_USER_PROMPTS'] -eq '1')
+    $h.Exporters = @($envNames.Keys | Where-Object { $_ -like 'OTEL_*' -and $_ -ne 'OTEL_LOG_USER_PROMPTS' } | Sort-Object)
+    $proj = Join-Path $env:USERPROFILE '.claude\projects'
+    if (Test-Path -LiteralPath $proj) {
+        foreach ($f in Get-ChildItem -LiteralPath $proj -Recurse -Filter *.jsonl -File -ErrorAction SilentlyContinue) {
+            $h.Files++; $h.Bytes += $f.Length
+            if (-not $h.Oldest -or $f.LastWriteTime -lt $h.Oldest) { $h.Oldest = $f.LastWriteTime }
+        }
+    }
+    $h
+}
+
+function Get-ClaudeDataHealthText($h) {
+    $ret = $(if ($null -eq $h.Retention) { '30 days (Claude Code default; not set in settings.json)' } else { "$($h.Retention) days (set in settings.json)" })
+    $old = $(if ($h.Oldest) { "oldest from $($h.Oldest.ToString('yyyy-MM-dd')) ($([int]((Get-Date) - $h.Oldest).TotalDays) days ago)" } else { 'none found' })
+    $tele = $(if ($h.Telemetry) { 'on' } else { 'off' })
+    $ex = $(if ($h.Exporters.Count) { $h.Exporters -join ', ' } else { '(none)' })
+    $pl = $(if ($h.PromptLogging) { 'ON: prompt text is sent to the telemetry endpoint' } else { 'off' })
+    $rec = $(if ($null -eq $h.Retention -or $h.Retention -lt 365) { "Recommendation: raise it, e.g. to 3650 days, so cost history and any later review of how you use Claude Code keep their data (the button below makes that one change after asking)." } else { 'Retention is long enough for cost history and later review.' })
+    @(
+        'CLAUDE CODE SESSION HISTORY',
+        "  Kept for: $ret",
+        "  On disk now: $($h.Files) transcript files, $([math]::Round($h.Bytes / 1MB, 1)) MB; $old",
+        '',
+        'Claude Code deletes transcripts older than this each time it starts. The Wrangler keeps its own cost totals, so those survive, but anything that reviews what you actually did (prompts, tools, subagents) needs the files themselves.',
+        $rec,
+        '',
+        'TELEMETRY (OpenTelemetry)',
+        "  Enabled: $tele     Exporter settings present: $ex",
+        "  Prompt text logging: $pl",
+        '  This app never changes telemetry. See https://code.claude.com/docs/en/monitoring-usage',
+        '',
+        'Note: transcripts are plain text and can contain secrets that tools printed (for example from .env files).'
+    ) -join "`r`n"
+}
+
+# Sets cleanupPeriodDays in ~\.claude\settings.json: backup first, edit only that key as text (everything else stays byte for byte), verify, else restore.
+function Set-ClaudeRetention([int]$Days) {
+    $f = Join-Path $env:USERPROFILE '.claude\settings.json'
+    try {
+        $dir = Split-Path -Parent $f; if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+        if (-not (Test-Path -LiteralPath $f)) { Set-Content -LiteralPath $f -Value "{`r`n  `"cleanupPeriodDays`": $Days`r`n}" -Encoding UTF8; return [pscustomobject]@{ Ok = $true; Message = "Created $f with cleanupPeriodDays = $Days." } }
+        $txt = [IO.File]::ReadAllText($f); $bak = "$f.bak"; Copy-Item -LiteralPath $f -Destination $bak -Force
+        if ($txt -match '"cleanupPeriodDays"\s*:\s*\d+') { $new = [regex]::Replace($txt, '("cleanupPeriodDays"\s*:\s*)\d+', ('${1}' + $Days), 1) }
+        else {
+            $m = [regex]::Match($txt, '\{'); if (-not $m.Success) { return [pscustomobject]@{ Ok = $false; Message = 'settings.json does not look like a JSON object; nothing changed.' } }
+            $rest = $txt.Substring($m.Index + 1); $comma = $(if ($rest -match '^\s*"') { ',' } else { '' })
+            $new = $txt.Substring(0, $m.Index + 1) + "`r`n  `"cleanupPeriodDays`": $Days$comma" + $rest
+        }
+        [IO.File]::WriteAllText($f, $new, (New-Object System.Text.UTF8Encoding($false)))
+        $ok = $false; try { $ok = ([int]((Get-Content -LiteralPath $f -Raw | ConvertFrom-Json).cleanupPeriodDays) -eq $Days) } catch { }
+        if (-not $ok) { Copy-Item -LiteralPath $bak -Destination $f -Force; return [pscustomobject]@{ Ok = $false; Message = 'The edited file did not validate; the original was restored.' } }
+        [pscustomobject]@{ Ok = $true; Message = "Set cleanupPeriodDays = $Days (backup: $bak)." }
+    } catch { [pscustomobject]@{ Ok = $false; Message = "Could not change settings.json: $_" } }
+}
+
+function Show-DataHealthDialog($OwnerForm) {
+    Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing
+    $dlg = New-Object System.Windows.Forms.Form
+    $dlg.Text = 'Claude Code data health'; $dlg.ClientSize = New-Object System.Drawing.Size(640, 430)
+    $dlg.FormBorderStyle = 'FixedDialog'; $dlg.MaximizeBox = $false; $dlg.MinimizeBox = $false; $dlg.StartPosition = 'CenterParent'
+    $box = New-Object System.Windows.Forms.TextBox
+    $box.Multiline = $true; $box.ReadOnly = $true; $box.ScrollBars = 'Vertical'; $box.Location = New-Object System.Drawing.Point(12, 12); $box.Size = New-Object System.Drawing.Size(616, 360); $box.BackColor = [System.Drawing.SystemColors]::Window
+    $bSet = New-Object System.Windows.Forms.Button; $bSet.Text = 'Set retention to 3650 days...'; $bSet.Location = New-Object System.Drawing.Point(12, 384); $bSet.Size = New-Object System.Drawing.Size(190, 28)
+    $bCopy = New-Object System.Windows.Forms.Button; $bCopy.Text = 'Copy snippet'; $bCopy.Location = New-Object System.Drawing.Point(210, 384); $bCopy.Size = New-Object System.Drawing.Size(100, 28)
+    $bOpen = New-Object System.Windows.Forms.Button; $bOpen.Text = 'Open settings.json'; $bOpen.Location = New-Object System.Drawing.Point(318, 384); $bOpen.Size = New-Object System.Drawing.Size(130, 28)
+    $bClose = New-Object System.Windows.Forms.Button; $bClose.Text = 'Close'; $bClose.Location = New-Object System.Drawing.Point(538, 384); $bClose.Size = New-Object System.Drawing.Size(90, 28)
+    $bClose.DialogResult = [System.Windows.Forms.DialogResult]::Cancel; $dlg.CancelButton = $bClose
+    $dlg.Controls.AddRange(@($box, $bSet, $bCopy, $bOpen, $bClose))
+    $tip = New-Object System.Windows.Forms.ToolTip
+    $tip.SetToolTip($bSet, 'Adds "cleanupPeriodDays": 3650 to ~\.claude\settings.json after asking, keeping a settings.json.bak backup. Nothing else is changed.')
+    $tip.SetToolTip($bCopy, 'Copy the one-line setting to paste into settings.json yourself.')
+    $refresh = {
+        $h = Get-ClaudeDataHealth; $box.Text = Get-ClaudeDataHealthText $h
+        $bSet.Enabled = ($null -eq $h.Retention -or $h.Retention -lt 365)
+    }.GetNewClosure()
+    & $refresh
+    $bCopy.Add_Click({ try { [System.Windows.Forms.Clipboard]::SetText('"cleanupPeriodDays": 3650') } catch { } }.GetNewClosure())
+    $bOpen.Add_Click({ $f = Join-Path $env:USERPROFILE '.claude\settings.json'; try { if (Test-Path -LiteralPath $f) { Start-Process -FilePath $f } else { Start-Process explorer.exe -ArgumentList (Split-Path -Parent $f) } } catch { } }.GetNewClosure())
+    $bSet.Add_Click({
+        $f = Join-Path $env:USERPROFILE '.claude\settings.json'
+        $q = "Change one setting in Claude Code's settings?`n`nFile: $f`nChange: set cleanupPeriodDays to 3650 (keep session history for about 10 years instead of deleting it after the current period).`n`nA backup is saved as settings.json.bak first and nothing else in the file is touched."
+        if ([System.Windows.Forms.MessageBox]::Show($dlg, $q, 'Set Claude Code retention', 'YesNo', 'Question') -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+        $r = Set-ClaudeRetention 3650
+        [void][System.Windows.Forms.MessageBox]::Show($dlg, $r.Message, 'Claude Code data health')
+        & $refresh
+    }.GetNewClosure())
+    [void]$dlg.ShowDialog($OwnerForm)
+    $dlg.Dispose()
+}
+
 # Opens CHANGELOG.md from the install folder (always matches the installed version, works offline); falls back to GitHub.
 function Open-Changelog {
     $f = Join-Path $PSScriptRoot 'CHANGELOG.md'
@@ -1202,6 +1515,9 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
     foreach ($col in @(@('Project', 200), @('Open', 45), @('Last active', 85), @('When', 115), @('Path', 230), @('Branch', 110), @('State', 55), @('Remote', 160))) {
         [void]$lv.Columns.Add($col[0], $col[1])
     }
+    # Optional Cost column (index 8, after Remote so every other column index is unchanged).
+    $ctx.CostOn = [bool]($Actions -and $Actions.CostOn)
+    if ($ctx.CostOn) { [void]$lv.Columns.Add('Cost', 80); $lv.Columns[8].TextAlign = 'Right' }
 
     # ListView column headers have no built-in tooltips, so hit-test the mouse against the header strip.
     $colHelp = @(
@@ -1215,6 +1531,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
         "Remote: the project's git remote (origin preferred) on any host - owner/repo for GitHub, host/path otherwise. Click it to open the repository in your browser.`nBlank if the project has no remote."
     )
     $ctx.RemoteCol = 7
+    if ($ctx.CostOn) { $colHelp += "Cost: estimated API-equivalent cost of this project's Claude Code sessions so far (from Claude Code's local session files).`nHover a value for the breakdown. '~' = some models are not in the price table yet." }
     $tip = New-Object System.Windows.Forms.ToolTip
     $ctx.TipCol = -1
     $lv.Add_MouseMove({
@@ -1238,6 +1555,14 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
         $overLink = $false
         if ($hit.Item -and $hit.SubItem -and $hit.Item.SubItems.IndexOf($hit.SubItem) -eq $ctx.RemoteCol -and $ctx.Remote.ContainsKey([string]$hit.Item.Tag)) { $overLink = $true }
         if ($overLink) { $lv.Cursor = [System.Windows.Forms.Cursors]::Hand } else { $lv.Cursor = [System.Windows.Forms.Cursors]::Default }
+        # Cost cell: breakdown tooltip.
+        if ($ctx.CostOn -and $hit.Item -and $hit.SubItem -and $hit.Item.SubItems.IndexOf($hit.SubItem) -eq 8) {
+            $cp = [string]$hit.Item.Tag
+            if ($ctx.TipCell -ne $cp) {
+                $r0 = $Rows | Where-Object { $_.Path -eq $cp } | Select-Object -First 1
+                if ($r0 -and $r0.CostTip) { $ctx.TipCell = $cp; $tip.Show([string]$r0.CostTip, $lv, ($e.X + 14), ($e.Y + 22), 20000) }
+            }
+        } elseif ($ctx.TipCell) { $ctx.TipCell = $null; $tip.Hide($lv) }
     }.GetNewClosure())
     # Clicking a Remote cell opens that repository.
     $lv.Add_MouseClick({
@@ -1406,7 +1731,8 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
                 4 { { $_.Path } }
                 5 { { [string]$_.Branch } }
                 6 { { if ($_.Dirty -eq $true) { 0 } elseif ($_.Dirty -eq $false) { 1 } else { 2 } } }
-                default { { [string]$_.RemoteUrl } }
+                7 { { [string]$_.RemoteUrl } }
+                default { { if ($null -eq $_.CostUsd) { -1 } else { [double]$_.CostUsd } } }
             }
             $list = @($list | Sort-Object -Property $key -Descending:([bool]$ctx.SortDesc))
         }
@@ -1424,6 +1750,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
             $gh = ''
             if ($r.RemoteUrl) { $gh = ($r.RemoteUrl -replace '^https://', '') -replace '^github\.com/', '' }
             [void]$it.SubItems.Add($r.Path); [void]$it.SubItems.Add([string]$r.Branch); [void]$it.SubItems.Add($st); [void]$it.SubItems.Add($gh)
+            if ($ctx.CostOn) { [void]$it.SubItems.Add([string]$r.CostText) }
             $it.Tag = $r.Path
             # Per-cell styling so the Remote cell can look like a link; the green "open" tint is applied to every cell.
             $it.UseItemStyleForSubItems = $false
@@ -1517,7 +1844,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
     $lv.Add_ColumnClick({
         param($s, $e)
         $c = [int]$e.Column
-        if ($ctx.SortCol -eq $c) { $ctx.SortDesc = -not $ctx.SortDesc } else { $ctx.SortCol = $c; $ctx.SortDesc = ($c -in 1, 2, 3) }
+        if ($ctx.SortCol -eq $c) { $ctx.SortDesc = -not $ctx.SortDesc } else { $ctx.SortCol = $c; $ctx.SortDesc = ($c -in 1, 2, 3, 8) }
         for ($i = 0; $i -lt $lv.Columns.Count; $i++) {
             $mark = ''; if ($i -eq $c) { $mark = $(if ($ctx.SortDesc) { ' ' + [char]0x25BC } else { ' ' + [char]0x25B2 }) }
             $lv.Columns[$i].Text = $colNames[$i] + $mark
@@ -1547,7 +1874,8 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
         foreach ($k in @($ctx.Remote.Keys)) { if (-not $live.ContainsKey([string]$k)) { [void]$ctx.Remote.Remove($k) } }
         & $fill
         $extra = ''; if ($res -and ($res.Added -or $res.Removed)) { $extra = " ($($res.Added) new, $($res.Removed) gone)" } elseif ($res -and $res.Skipped) { $extra = ' (folders not rescanned: the list was narrowed by a command-line switch)' }
-        $status.Text = '{0} open project(s); {1} project(s) refreshed{2}.' -f $ctx.Running.Count, @($Rows).Count, $extra
+        $costNote = ''; if ($ctx.CostOn) { $sum = 0.0; $n = 0; foreach ($r in $Rows) { if ($null -ne $r.CostUsd) { $sum += [double]$r.CostUsd; $n++ } }; $costNote = ' Cost so far: $' + $sum.ToString('N2') + " across $n project(s)." }
+        $status.Text = ('{0} open project(s); {1} project(s) refreshed{2}.' -f $ctx.Running.Count, @($Rows).Count, $extra) + $costNote
     }.GetNewClosure())
     $btnRefresh.Add_Click({
         & $refresh
@@ -1598,7 +1926,17 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
         param($op, $owner)
         $row = & $ctx.GitRow
         if (-not $row) { $status.Text = 'Select a project first.'; return }
-        try { $status.Text = [string](& $OnGitOp $op $row $form $owner) } catch { $status.Text = "Git action failed: $_" }
+        $msg = ''
+        try { $msg = [string](& $OnGitOp $op $row $form $owner) } catch { $msg = "Git action failed: $_" }
+        $status.Text = $msg
+        # The status line alone is easy to miss (and the window refreshes it when it is re-activated after a dialog), so show the outcome.
+        if ($msg -and $msg -ne 'Cancelled.') {
+            $good = ($msg -match '^(Created|Initialized|Added|Dry run)')
+            $ic = $(if ($good) { 'Information' } else { 'Warning' })
+            $tail = ''; if (-not $good) { $tail = "`n`nThis is in the log; Settings > Copy diagnostics puts it on the clipboard for an issue report." }
+            [void][System.Windows.Forms.MessageBox]::Show($form, ($msg + $tail), 'Git', 'OK', $ic)
+        }
+        $ctx.Clock.Restart()
         if ($row.RemoteUrl) { $ctx.Remote[$row.Path] = $row.RemoteUrl }
         & $fill
     }.GetNewClosure()
@@ -1793,6 +2131,10 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
     $miUpd = $menu.Items.Add('Check for updates now')
     $miRoot = $menu.Items.Add('Projects folders...')
     $miLog = $menu.Items.Add('Changelog (what changed in each version)')
+    $miCost = $menu.Items.Add('Show project cost'); $miCost.CheckOnClick = $false
+    $miHealth = $menu.Items.Add('Claude Code data health...')
+    $miDiag = $menu.Items.Add('Copy diagnostics (for an issue report)')
+    $miLogOpen = $menu.Items.Add('Open the log')
     $miAbout = $menu.Items.Add('About Workspace Wrangler...')
     $miAbout.ToolTipText = 'Version, links and the full concept art.'
     $miCfg.ToolTipText = 'Open config.json (global defaults) in your editor. Changes apply the next time the picker starts.'
@@ -1819,6 +2161,14 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
         $p = & $Actions.ChooseRoot
         if ($p) { & $Update.Restart; $form.Close() }
     }.GetNewClosure())
+    $miCost.Checked = $ctx.CostOn
+    $miCost.ToolTipText = "Add a Cost column: each project's estimated Claude Code cost, from Claude Code's local session files (read-only; the picker restarts)."
+    $miCost.Add_Click({ if ($Actions -and $Actions.SetCost) { & $Actions.SetCost (-not $ctx.CostOn); & $Update.Restart; $form.Close() } }.GetNewClosure())
+    $miHealth.ToolTipText = 'Check whether Claude Code keeps its session history long enough for cost and usage review, and what telemetry is on.'
+    $miHealth.Add_Click({ if ($Actions -and $Actions.Health) { & $Actions.Health $form } }.GetNewClosure())
+    $miDiag.ToolTipText = 'Copy versions and the recent log (user name and home folder masked) to the clipboard, ready to paste into a GitHub issue.'
+    $miDiag.Add_Click({ try { & $Actions.Diagnostics; $status.Text = 'Diagnostics copied to the clipboard.' } catch { $status.Text = "Could not copy diagnostics: $_" } }.GetNewClosure())
+    $miLogOpen.Add_Click({ try { & $Actions.OpenLog } catch { $status.Text = "Could not open the log: $_" } }.GetNewClosure())
     $miAbout.Add_Click({ if ($Actions -and $Actions.About) { & $Actions.About $form } }.GetNewClosure())
     $miLog.Add_Click({ if (-not (& $Update.Changelog)) { $status.Text = 'Could not open the changelog.' } }.GetNewClosure())
     $miUpd.Add_Click({
@@ -1865,6 +2215,14 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
     $form.Add_Shown({
         $form.TopMost = $true; $form.Activate(); $form.TopMost = $false
         $filterBox.Focus(); & $refresh
+        # Project cost: ask once (opt-in); when on, a background refresh fills the column (also re-reads git state).
+        if ($Actions -and $Actions.CostAsk) {
+            $q = "Show what each project has cost?`n`nWorkspace Wrangler can estimate each project's Claude Code cost from the session files Claude Code keeps on this computer (under ~\.claude\projects). It only reads them, keeps just token counts and model names in its own settings folder, and sends nothing anywhere.`n`nYou can change this any time under Settings > Show project cost."
+            $ans = [System.Windows.Forms.MessageBox]::Show($form, $q, 'Show project cost?', 'YesNo', 'Question')
+            & $Actions.SetCost ($ans -eq [System.Windows.Forms.DialogResult]::Yes)
+            if ($ans -eq [System.Windows.Forms.DialogResult]::Yes) { & $Update.Restart; $form.Close(); return }
+        }
+        if ($ctx.CostOn) { $btnRefresh.PerformClick() }
         # Update check on startup (non-blocking; throttled by updateCheckHours, cached result shown meanwhile).
         $t = & $Update.Start $false
         if ($t) { $ctx.UpdTask = $t; $updTimer.Start() } else { & $showUpdate (& $Update.Cached) }
@@ -2177,7 +2535,7 @@ function Invoke-RenameProject($Row, [string]$NewName, [string]$Note = '') {
     $enc = { param($p) $p -replace '[^A-Za-z0-9]', '-' }
     $oldH = Join-Path $env:USERPROFILE ".claude\projects\$(& $enc $old)"; $newH = Join-Path $env:USERPROFILE ".claude\projects\$(& $enc $new)"
     if ((Test-Path -LiteralPath $oldH) -and -not (Test-Path -LiteralPath $newH)) {
-        try { Move-Item -LiteralPath $oldH -Destination $newH -ErrorAction Stop; $notes += 'moved its Claude history' } catch { $notes += "could not move its Claude history ($_)" }
+        try { Move-Item -LiteralPath $oldH -Destination $newH -ErrorAction Stop; $notes += 'moved its Claude history'; try { Move-CostLedgerDir (& $enc $old) (& $enc $new) } catch { } } catch { $notes += "could not move its Claude history ($_)" }
     }
     $pf = Join-Path $ConfigDir 'presets.json'
     if (Test-Path -LiteralPath $pf) {
@@ -2561,7 +2919,7 @@ function New-Row($d, [bool]$Scan, [bool]$Git, $Facts) {
         if ($Git) { $gi = Get-GitInfo $d.FullName }
     }
     $hasGit = Test-Path -LiteralPath (Join-Path $d.FullName '.git')
-    [pscustomobject]@{
+    $row = [pscustomobject]@{
         Name = $d.Name; Path = $d.FullName
         LastActiveDt = $la
         Relative   = $(if ($la) { Format-Relative $la } else { '' })
@@ -2572,7 +2930,10 @@ function New-Row($d, [bool]$Scan, [bool]$Git, $Facts) {
         Dirty  = $(if ($gi) { $gi.Dirty } else { $null })
         HasHistory = (Test-ClaudeHistory $d.FullName)
         HasPreset = [bool](Get-Preset $d.Name)
+        CostUsd = $null; CostText = ''; CostTip = ''
     }
+    Set-RowCost $row
+    $row
 }
 
 # Fast path: -Project names given -> no scan, no git info needed.
@@ -2588,7 +2949,20 @@ if ($Project.Count -gt 0 -and -not $List) {
     return
 }
 
+# Project cost is opt-in (config showCost). The ledger and prices are loaded once here; rows read from them.
+$script:CostOn = ($cfg.showCost -eq $true)
+$script:CostLedger = $null; $script:Prices = $null
+if ($script:CostOn) { $script:CostLedger = Read-CostLedger; $script:Prices = Get-ModelPrices }
 $needGit = [bool]$cfg.gitInfo -and ($List -or ($Picker -eq 'Forms' -and -not $All))
+# -List has no window to refresh in the background, so scan session files for cost right here (picker starts use the ledger, then refresh in the background).
+if ($script:CostOn -and $List) {
+    $known = @{}; foreach ($e in $script:CostLedger.files.GetEnumerator()) { $known[$e.Key] = [string]$e.Value.sig }
+    foreach ($d in $dirs) {
+        $cd = Join-Path (Join-Path $env:USERPROFILE '.claude\projects') ($d.FullName -replace '[^A-Za-z0-9]', '-')
+        if (Test-Path -LiteralPath $cd) { try { Merge-CostScan $script:CostLedger (Get-ProjectCostScan $cd $known) } catch { } }
+    }
+    Save-CostLedger $script:CostLedger
+}
 $facts = Get-ProjectFacts $dirs $true $needGit
 $rows = @($dirs | ForEach-Object { New-Row $_ $true $needGit $facts } | Sort-Object LastActiveDt -Descending)
 if ($Filter) { $rows = @($rows | Where-Object { $_.Name -like "*$Filter*" -or $_.Path -like "*$Filter*" }) }
@@ -2606,7 +2980,7 @@ if ($List) {
             lastActive = $(if ($_.LastActiveDt) { $_.LastActiveDt.ToString('o') } else { $null })
             isGit = $_.IsGit; branch = $_.Branch; dirty = $_.Dirty; remoteUrl = $_.RemoteUrl
             running = [bool]($running | Where-Object { $_ -ieq $n })
-            hasClaudeHistory = $_.HasHistory; hasPreset = $_.HasPreset
+            hasClaudeHistory = $_.HasHistory; hasPreset = $_.HasPreset; costUsd = $_.CostUsd   # costUsd is null unless showCost is on
         } })
     ConvertTo-Json -InputObject $out -Depth 3
     return
@@ -2634,27 +3008,34 @@ if ($All) {
     $getRunning = { Get-RunningNames }
     $onSaveLayout = { Save-WindowLayout }
     $onArrange = { param($style, $ignoreSaved) Invoke-ArrangeOpen ([string]$style) ([bool]$ignoreSaved) }
-    $onGitOp = { param($op, $row, $form, $preset) Invoke-PickerGitOp ([string]$op) $row $form ([string]$preset) }
+    $onGitOp = { param($op, $row, $form, $preset) try { Invoke-PickerGitOp ([string]$op) $row $form ([string]$preset) } catch { Write-AppLog "git $op crashed: $_ $($_.ScriptStackTrace)"; throw } }
     $onCascade = { param($self) Invoke-CascadeFront ([int64]$self) }
-    $actions = @{ About = { param($owner) Show-AboutDialog $owner }; LaunchOptions = { param($row, $owner) Invoke-PickerLaunchOptions $row $owner }; NewProject = { param($owner) Invoke-PickerNewProject $owner }; RenameProject = { param($row, $owner) Invoke-PickerRenameProject $row $owner }; ChooseRoot = { $p = @(Show-RootDialog { @(Find-ProjectRootCandidates) } 'Choose the folders that hold your projects.' @($Roots)); if ($p.Count) { Set-ProjectRoots $p }; [bool]$p.Count } }
+    $actions = @{ Diagnostics = { [System.Windows.Forms.Clipboard]::SetText((Get-DiagnosticsText)) }; OpenLog = { $lf = Join-Path $ConfigDir 'app.log'; if (-not (Test-Path -LiteralPath $lf)) { Set-Content -LiteralPath $lf -Value '' }; Start-Process -FilePath $lf }; CostOn = $script:CostOn; CostAsk = ($null -eq $cfg.showCost -and -not $DryRun); SetCost = { param($v) Set-ConfigValue 'showCost' ([bool]$v) }; Health = { param($owner) Show-DataHealthDialog $owner }; About = { param($owner) Show-AboutDialog $owner }; LaunchOptions = { param($row, $owner) Invoke-PickerLaunchOptions $row $owner }; NewProject = { param($owner) Invoke-PickerNewProject $owner }; RenameProject = { param($row, $owner) Invoke-PickerRenameProject $row $owner }; ChooseRoot = { $p = @(Show-RootDialog { @(Find-ProjectRootCandidates) } 'Choose the folders that hold your projects.' @($Roots)); if ($p.Count) { Set-ProjectRoots $p }; [bool]$p.Count } }
     $onIde = { param($paths) Invoke-OpenIde ([string[]]$paths) }
     # Refresh support: rescan the project folders (new/removed projects), then start Get-ProjectFacts for every project in a background
     # runspace and apply the finished result to the rows in place.
     $onFactsStart = {
         $script:RefreshDirs = @(Get-ProjectDirs)
-        $fns = 'ConvertTo-RemoteWebUrl', 'Get-GitInfo', 'Get-LastActive', 'Get-ProjectFacts'
+        $fns = 'ConvertTo-RemoteWebUrl', 'Get-GitInfo', 'Get-LastActive', 'Get-ProjectFacts', 'Read-TranscriptUsage', 'Get-ProjectCostScan'
         $defs = ($fns | ForEach-Object { "function $_ {`n" + (Get-Item "function:$_").ScriptBlock.ToString() + "`n}" }) -join "`n"
-        $body = 'param($paths, $noise, $maxFiles, $maxDepth, $git)' + "`n" + '$NoiseDirs = $noise; $MaxScanFiles = $maxFiles; $MaxScanDepth = $maxDepth' + "`n" + $defs + "`n" +
-            '$d = @($paths | ForEach-Object { [pscustomobject]@{ FullName = $_ } }); Get-ProjectFacts $d $true $git'
+        $known = @{}; if ($script:CostOn) { foreach ($e in $script:CostLedger.files.GetEnumerator()) { $known[$e.Key] = [string]$e.Value.sig } }
+        $body = 'param($paths, $noise, $maxFiles, $maxDepth, $git, $costOn, $known, $home2)' + "`n" + '$NoiseDirs = $noise; $MaxScanFiles = $maxFiles; $MaxScanDepth = $maxDepth' + "`n" + $defs + "`n" +
+            '$d = @($paths | ForEach-Object { [pscustomobject]@{ FullName = $_ } }); $facts = Get-ProjectFacts $d $true $git' + "`n" +
+            '$cost = @{}; if ($costOn) { foreach ($p in $paths) { $enc = $p -replace ''[^A-Za-z0-9]'', ''-''; $dir = Join-Path $home2 (''.claude\projects\'' + $enc); if (Test-Path -LiteralPath $dir) { try { $cost[$enc] = Get-ProjectCostScan $dir $known } catch { } } } }' + "`n" +
+            '@{ Facts = $facts; Cost = $cost }'
         $ps = [powershell]::Create()
-        [void]$ps.AddScript($body).AddArgument([string[]]@($script:RefreshDirs | ForEach-Object { $_.FullName })).AddArgument($NoiseDirs).AddArgument($MaxScanFiles).AddArgument($MaxScanDepth).AddArgument([bool]$needGit)
+        [void]$ps.AddScript($body).AddArgument([string[]]@($script:RefreshDirs | ForEach-Object { $_.FullName })).AddArgument($NoiseDirs).AddArgument($MaxScanFiles).AddArgument($MaxScanDepth).AddArgument([bool]$needGit).AddArgument([bool]$script:CostOn).AddArgument($known).AddArgument([string]$env:USERPROFILE)
         @{ PS = $ps; Handle = $ps.BeginInvoke() }
     }
     $onFactsDone = {
         param($task)
         try { $out = @($task.PS.EndInvoke($task.Handle)) } finally { $task.PS.Dispose() }
         if (-not $out.Count -or $out[-1] -isnot [hashtable]) { throw 'the background check returned nothing' }
-        $f = $out[-1]
+        $res0 = $out[-1]; $f = $res0.Facts
+        if ($script:CostOn -and $res0.Cost.Count) {
+            foreach ($scan in $res0.Cost.Values) { Merge-CostScan $script:CostLedger $scan }
+            Save-CostLedger $script:CostLedger
+        }
         $added = 0; $removed = 0
         if ($rescanAllowed) {
             $cur = @($script:RefreshDirs)
@@ -2684,6 +3065,7 @@ if ($All) {
             $r.HasHistory = Test-ClaudeHistory $r.Path
             $r.HasPreset = [bool](Get-Preset $r.Name)
         }
+        foreach ($r in $rows) { Set-RowCost $r }
         @{ Added = $added; Removed = $removed; Skipped = (-not $rescanAllowed) }
     }
     $update = @{
