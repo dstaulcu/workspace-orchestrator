@@ -2577,20 +2577,24 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
         $ctx.Syncing = $true; try { $e.Item.Checked = $e.IsSelected } finally { $ctx.Syncing = $false }   # highlighting ticks the row
         & $showSel
     }.GetNewClosure())
-    # A click on a check box is about that row only. Windows still treats a click on an already highlighted row as "select just
-    # this row" and drops the other highlights when the button comes up, which the mirroring above would turn into unticking
-    # every other project. So while a check box is being clicked, selection changes are ignored, and on release the highlight
-    # is set back to match the ticks.
+    # A click on a check box is about that row only. Windows toggles the box of EVERY highlighted row when you click the box of a
+    # highlighted one, and here every ticked row is highlighted, so unticking one unticked them all; it can also drop the other
+    # highlights. So while a check box is being clicked, other rows' check changes are refused (ItemCheck), selection changes are
+    # ignored, and on release the highlight is set back to match the ticks.
     $lv.Add_MouseDown({
         param($s, $e)
-        $ctx.BoxClick = $false
+        $ctx.BoxClick = $false; $ctx.BoxIndex = -1
         if ($e.Button -ne [System.Windows.Forms.MouseButtons]::Left) { return }
         $hit = $lv.HitTest($e.X, $e.Y)
-        if ($hit.Item -and $hit.Location -eq [System.Windows.Forms.ListViewHitTestLocations]::StateImage) { $ctx.BoxClick = $true }
+        if ($hit.Item -and ($hit.Location -band [System.Windows.Forms.ListViewHitTestLocations]::StateImage)) { $ctx.BoxClick = $true; $ctx.BoxIndex = $hit.Item.Index }
+    }.GetNewClosure())
+    $lv.Add_ItemCheck({
+        param($s, $e)
+        if ($ctx.BoxClick -and $e.Index -ne $ctx.BoxIndex) { $e.NewValue = $e.CurrentValue }
     }.GetNewClosure())
     $endBoxClick = {
         if (-not $ctx.BoxClick) { return }
-        $ctx.BoxClick = $false
+        $ctx.BoxClick = $false; $ctx.BoxIndex = -1
         & $setSelection @($ctx.Checked); & $showSel
     }.GetNewClosure()
     $lv.Add_MouseUp($endBoxClick)

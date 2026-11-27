@@ -16,7 +16,7 @@ version when you release.
 - **Branding in one file.** The app's name, short name, tagline and repository now come from `assets/brand.json`, used by every window title, dialog, message, the help links, the update source and the Desktop shortcut's name. A fork rebrands by editing that file (and the art).
 
 ### Fixed
-- **Unticking one project no longer unticks the others.** Clicking the check box of a ticked row made Windows highlight just that row, and because highlighting and ticking mirror each other, every other project was unticked. A click on a check box now changes only that row.
+- **Unticking one project no longer unticks the others.** Windows toggles the box of every highlighted row when you click the box of a highlighted one, and every ticked row is highlighted, so unticking one unticked them all. A click on a check box now changes only that row.
 - **Launch options** no longer logs an error when a project has no fixed tab color; the color swatch now shows the dialog's background in that case.
 
 ### Known limits
