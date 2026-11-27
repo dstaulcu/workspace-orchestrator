@@ -1,11 +1,11 @@
 <#
 .SYNOPSIS
-    Creates the Desktop "Workspace Wrangler" shortcut (idempotent: overwrites).
+    Creates the Desktop shortcut named for the app (assets\brand.json; idempotent: overwrites).
     Checks that Git and VS Code are installed first (stops with instructions if not).
     Optional -Project makes a per-project shortcut that skips the picker.
 #>
 param(
-    [string]$Name = 'Workspace Wrangler',
+    [string]$Name = $(try { [string](Get-Content -LiteralPath (Join-Path $PSScriptRoot 'assets\brand.json') -Raw -ErrorAction Stop | ConvertFrom-Json).name } catch { 'Workspace Wrangler' }),
     [string]$Project,
     [string]$Folder = [Environment]::GetFolderPath('Desktop'),
     [switch]$SkipPrereqCheck
@@ -24,7 +24,7 @@ if (-not $SkipPrereqCheck) {
         $missing += 'Visual Studio Code  https://code.visualstudio.com/'
     }
     if ($missing) {
-        Write-Warning 'Workspace Wrangler expects these to be installed first:'
+        Write-Warning "$Name expects these to be installed first:"
         $missing | ForEach-Object { Write-Warning "  - $_" }
         Write-Warning 'Install them, then run Install-Shortcut.ps1 again to continue (-SkipPrereqCheck overrides this check).'
         exit 1

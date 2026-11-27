@@ -58,13 +58,19 @@ param(
 
 # ---------------------------------------------------------------- config / state
 $AppVersion = '1.9.0'   # bump on every release; the update check compares it with the latest GitHub release tag
-$AppName = 'Workspace Wrangler'   # display name; a rebranded fork changes it here (older strings still name it directly)
+# Branding: every name, tagline and repository link the app shows comes from assets\brand.json, so a fork rebrands by editing that one file.
+$AppBrand = @{ name = 'Workspace Wrangler'; shortName = 'Wrangler'; tagline = 'Tame your sea of projects and terminals, and restart your whole workday in one click.'; repo = 'dstaulcu/workspace-wrangler' }
+try {
+    $b = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'assets\brand.json') -Raw -ErrorAction Stop | ConvertFrom-Json
+    foreach ($k in @('name', 'shortName', 'tagline', 'repo')) { if ($b.$k) { $AppBrand[$k] = [string]$b.$k } }
+} catch { }
+$AppName = $AppBrand.name; $AppShortName = $AppBrand.shortName; $AppTagline = $AppBrand.tagline; $AppRepo = $AppBrand.repo
 $cfg = @{
     root = 'C:\code'; roots = @(); projects = @(); top = 0; ignore = @()
     noiseDirs = @('.git','node_modules','.venv','venv','__pycache__','dist','build','.next','bin','obj','.idea','.vscode')
     maxScanFiles = 5000; maxScanDepth = 6; picker = 'Forms'
     shell = $true; diff = $true; tabColors = $true; gitInfo = $true; claudeArgs = ''; refreshSeconds = 60; arrangeOnLaunch = $true; arrangeStyle = 'cascade'; keepDesktopIconsClear = $true; windowWidth = 1100; windowHeight = 750; restoreLayouts = $true
-    checkForUpdates = $true; updateCheckHours = 24; updateRepo = 'dstaulcu/workspace-wrangler'
+    checkForUpdates = $true; updateCheckHours = 24; updateRepo = $AppRepo
     gitOpsOrg = ''; gitOpsTargets = @(); gitOpsVisibility = 'private'; defaultBranch = 'main'
     ide = 'code'; ideArgs = '-n'; git = 'git'; hotkey = 'Ctrl+Alt+W'; claudeVariants = @(); theme = 'system'
 }
@@ -347,7 +353,7 @@ function Get-ProjectCostSummary($Ledger, [string]$Enc, $Prices) {
         $top = @($by.GetEnumerator() | Sort-Object Value -Descending | ForEach-Object { "$($_.Key) $(& $fmt $_.Value)" })
         if ($top.Count) { $lines += 'By model: ' + ($top -join '; ') }
         if ($unk.Count) { $lines += "Not priced (add them to model-prices.json): $(@($unk.Keys) -join ', ')" }
-        $lines += "From Claude Code's local session files, kept in the Wrangler's own ledger so it survives Claude's cleanup of old sessions. List prices; a subscription plan is not billed per token."
+        $lines += "From Claude Code's local session files, kept in the $AppShortName's own ledger so it survives Claude's cleanup of old sessions. List prices; a subscription plan is not billed per token."
         $tip = $lines -join "`n"
     }
     [pscustomobject]@{ Sessions = $sess.Count; Total = $tot; Incomplete = ($unk.Count -gt 0); Tip = $tip }
@@ -685,7 +691,7 @@ function Invoke-CascadeFront([int64]$SelfHandle = 0) {
     $wins = @(Get-TerminalWindows | Where-Object { $_.Name } | Sort-Object Name)
     Initialize-WinApi
     if ($SelfHandle) {   # the Wrangler joins the cascade as the last (topmost) window, keeping its own size
-        $wins += [pscustomobject]@{ Handle = $SelfHandle; Name = '~Workspace Wrangler'; Sh = $null; KeepSize = $true }
+        $wins += [pscustomobject]@{ Handle = $SelfHandle; Name = "~$AppName"; Sh = $null; KeepSize = $true }
     }
     if (-not $wins.Count) { return 0 }
     foreach ($w in $wins) { if ([WoWin]::IsIconic([IntPtr][int64]$w.Handle)) { [void][WoWin]::ShowWindow([IntPtr][int64]$w.Handle, 9) } }
@@ -832,7 +838,7 @@ function Get-DiagnosticsText {
     $mask = { param($t) $t = [string]$t; $t = $t.Replace([string]$env:USERPROFILE, '%USERPROFILE%'); if ($env:USERNAME) { $t = $t.Replace([string]$env:USERNAME, '<user>') }; $t }
     $tool = { param($c, $a) try { [string](& $c @a 2>&1 | Select-Object -First 1) } catch { 'not found' } }
     $lines = @(
-        "Workspace Wrangler v$AppVersion",
+        "$AppName v$AppVersion",
         "OS: $([Environment]::OSVersion.VersionString)   PowerShell: $($PSVersionTable.PSVersion)",
         "git: $(& $tool 'git' @('--version'))   gh: $(& $tool 'gh' @('--version'))   wt: $(if (Get-Command wt.exe -ErrorAction SilentlyContinue) { 'found' } else { 'not found' })",
         "Project folders configured: $(@($Roots).Count)   showCost: $($cfg.showCost)",
@@ -1294,7 +1300,7 @@ function Install-Update($Info, [string]$Dir = $PSScriptRoot, [string]$Cfg = $Con
             Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $tmp 'x') -Force
             $root = Get-ChildItem -LiteralPath (Join-Path $tmp 'x') -Directory | Select-Object -First 1
             if (-not $root -or -not (Test-Path -LiteralPath (Join-Path $root.FullName 'Start-App.ps1'))) {
-                return [pscustomobject]@{ Ok = $false; Message = 'The downloaded release does not look like Workspace Wrangler; nothing was changed.' }
+                return [pscustomobject]@{ Ok = $false; Message = 'The downloaded release does not look like this app; nothing was changed.' }
             }
             # Back up whatever is about to be replaced, then copy the new files over the install folder.
             $bk = Join-Path $Cfg "backup\v$Ver"
@@ -1707,6 +1713,9 @@ public static class WoTheme {
         string text = e.Header == null ? "" : e.Header.Text;
         TextRenderer.DrawText(e.Graphics, text, e.Font, Rectangle.Inflate(r, -6, 0), Fore, f);
     }
+    // Whether the list had grid lines before dark mode turned the native ones off.
+    static bool seenGrid(ListView lv) { Orig o; return seen.TryGetValue(lv, out o) && o.Grid; }
+
     // A disabled flat button draws its text in a gray that vanishes on a dark background; draw it lighter.
     static void OnButtonPaint(object sender, PaintEventArgs e) {
         Button b = sender as Button;
@@ -1717,14 +1726,25 @@ public static class WoTheme {
         TextRenderer.DrawText(e.Graphics, b.Text, b.Font, r, Disabled, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
     }
 
-    // Rows stay native, except selected rows in dark mode: the native theme draws the first column's text black there.
-    static bool DrawSelected(ListViewItem it) { return dark && it != null && it.Selected && it.ListView != null && it.ListView.View == View.Details; }
-    static void OnDrawItem(object sender, DrawListViewItemEventArgs e) { e.DrawDefault = !DrawSelected(e.Item); }
+    // Light mode: rows stay native. Dark mode: every row of a details list is drawn here, because the native dark theme draws
+    // selected rows unevenly and the first column's text black on them. Cells keep their own colors; selected rows get one flat blue.
+    static bool DrawRows(ListViewItem it) { return dark && it != null && it.ListView != null && it.ListView.View == View.Details; }
+    static void OnDrawItem(object sender, DrawListViewItemEventArgs e) { e.DrawDefault = !DrawRows(e.Item); }
     static void OnDrawSubItem(object sender, DrawListViewSubItemEventArgs e) {
-        if (!DrawSelected(e.Item) || e.SubItem == null) { e.DrawDefault = true; return; }
+        if (!DrawRows(e.Item) || e.SubItem == null) { e.DrawDefault = true; return; }
         Rectangle b = e.Bounds;
         if (e.ColumnIndex == 0 && e.Header != null) b = new Rectangle(b.X, b.Y, e.Header.Width, b.Height);   // column 0 reports the whole row
-        using (SolidBrush bg = new SolidBrush(SelectBack)) e.Graphics.FillRectangle(bg, b);
+        bool own = !e.Item.UseItemStyleForSubItems;
+        bool sel = e.Item.Selected;
+        Color back = sel ? SelectBack : (own ? e.SubItem.BackColor : e.Item.BackColor);
+        if (back.IsEmpty) back = e.Item.ListView.BackColor;
+        using (SolidBrush bg = new SolidBrush(back)) e.Graphics.FillRectangle(bg, b);
+        using (Pen gp = new Pen(GridLine)) {
+            if (e.Item.ListView.GridLines || seenGrid(e.Item.ListView)) {
+                e.Graphics.DrawLine(gp, b.Left, b.Bottom - 1, b.Right - 1, b.Bottom - 1);
+                e.Graphics.DrawLine(gp, b.Right - 1, b.Top, b.Right - 1, b.Bottom - 1);
+            }
+        }
         Rectangle tr = new Rectangle(b.X + 3, b.Y, Math.Max(0, b.Width - 4), b.Height);
         if (e.ColumnIndex == 0 && e.Item.ListView.CheckBoxes) {
             CheckBoxState cs = e.Item.Checked ? CheckBoxState.CheckedNormal : CheckBoxState.UncheckedNormal;
@@ -1732,10 +1752,9 @@ public static class WoTheme {
             CheckBoxRenderer.DrawCheckBox(e.Graphics, new Point(b.X + 4 + Math.Max(0, (16 - gs.Width) / 2), b.Y + Math.Max(0, (b.Height - gs.Height) / 2)), cs);
             tr = new Rectangle(b.X + 20, b.Y, Math.Max(0, b.Width - 21), b.Height);
         }
-        bool own = !e.Item.UseItemStyleForSubItems;
         Color fc = own ? e.SubItem.ForeColor : e.Item.ForeColor;
         Font font = (own ? e.SubItem.Font : e.Item.Font) ?? e.Item.ListView.Font;
-        if (e.ColumnIndex == 0) fc = Fore;
+        if (fc.IsEmpty || (sel && e.ColumnIndex == 0)) fc = FieldFore;
         TextFormatFlags f = TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix;
         HorizontalAlignment a = e.Header == null ? HorizontalAlignment.Left : e.Header.TextAlign;
         if (a == HorizontalAlignment.Right) f |= TextFormatFlags.Right; else if (a == HorizontalAlignment.Center) f |= TextFormatFlags.HorizontalCenter; else f |= TextFormatFlags.Left;
@@ -1909,7 +1928,7 @@ function Show-AboutDialog($OwnerForm) {
     $art = Get-ArtImage 'splash.jpg'
     $w = 640; $h = 0; if ($art) { $h = $art.Height }
     $dlg = New-ThemedForm
-    $dlg.Text = 'About Workspace Wrangler'; $dlg.ClientSize = New-Object System.Drawing.Size(($w + 24), ($h + 130))
+    $dlg.Text = "About $AppName"; $dlg.ClientSize = New-Object System.Drawing.Size(($w + 24), ($h + 130))
     $dlg.FormBorderStyle = 'FixedDialog'; $dlg.MaximizeBox = $false; $dlg.MinimizeBox = $false; $dlg.StartPosition = 'CenterParent'
     $tip = New-ThemedToolTip
     $y = 12
@@ -1923,7 +1942,7 @@ function Show-AboutDialog($OwnerForm) {
         $dlg.Controls.Add($pic); $y += $h + 8
     }
     $ver = New-Object System.Windows.Forms.Label
-    $ver.Text = "Workspace Wrangler v$AppVersion`nTame your sea of projects and terminals, and restart your whole workday in one click."
+    $ver.Text = "$AppName v$AppVersion`n$AppTagline"
     $ver.Location = New-Object System.Drawing.Point(12, $y); $ver.Size = New-Object System.Drawing.Size($w, 36)
     $links = New-Object System.Windows.Forms.LinkLabel
     $repo = "https://github.com/$($cfg.updateRepo)"
@@ -1984,7 +2003,7 @@ function Get-ClaudeDataHealthText($h) {
         "  Kept for: $ret",
         "  On disk now: $($h.Files) transcript files, $([math]::Round($h.Bytes / 1MB, 1)) MB; $old",
         '',
-        'Claude Code deletes transcripts older than this each time it starts. The Wrangler keeps its own cost totals, so those survive, but anything that reviews what you actually did (prompts, tools, subagents) needs the files themselves.',
+        "Claude Code deletes transcripts older than this each time it starts. The $AppShortName keeps its own cost totals, so those survive, but anything that reviews what you actually did (prompts, tools, subagents) needs the files themselves.",
         $rec,
         '',
         'TELEMETRY (OpenTelemetry)',
@@ -2093,6 +2112,8 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
     [System.Windows.Forms.Application]::EnableVisualStyles()
+    # Local copies of the brand names: the handlers below are closures and can't see script variables.
+    $AppName = $AppName; $AppShortName = $AppShortName
     $ctx = @{
         Rebuilding = $false
         Checked = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
@@ -2112,7 +2133,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
 
     $form = New-ThemedForm
     $iconFile = Join-Path $PSScriptRoot 'assets\app.ico'
-    $form.Text = "Workspace Wrangler v$($Update.Current)"; if (Test-Path -LiteralPath $iconFile) { try { $form.Icon = New-Object System.Drawing.Icon($iconFile) } catch { } }; $form.ClientSize = New-Object System.Drawing.Size(1150, 628)
+    $form.Text = "$AppName v$($Update.Current)"; if (Test-Path -LiteralPath $iconFile) { try { $form.Icon = New-Object System.Drawing.Icon($iconFile) } catch { } }; $form.ClientSize = New-Object System.Drawing.Size(1150, 628)
     $form.StartPosition = 'CenterScreen'; $form.KeyPreview = $true
 
     $lbl = New-Object System.Windows.Forms.Label
@@ -2208,7 +2229,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
     $status.Text = ''; $status.AutoSize = $true; $status.Location = New-Object System.Drawing.Point(12, 552); $status.Anchor = 'Bottom,Left'
 
     # Help area: links back to the GitHub repo and its issue pages.
-    $repoUrl = 'https://github.com/dstaulcu/workspace-wrangler'
+    $repoUrl = "https://github.com/$AppRepo"
     $help = New-Object System.Windows.Forms.LinkLabel
     # Named for the app so it doesn't read as help for the selected project.
     $helpPrefix = "$AppName help:  "
@@ -2283,7 +2304,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
             'notes'  { try { Start-Process $info.Url } catch { $status.Text = "Could not open $($info.Url)" } }
             'skip'   { & $Update.Skip $info.Tag; & $showUpdate $null; $status.Text = "Skipping v$($info.Version). 'Check for updates now' in Settings brings it back." }
             'update' {
-                $q = "Update Workspace Wrangler to v$($info.Version)?`n`nYour settings are kept. The picker will restart. Open terminal windows are not affected."
+                $q = "Update $AppName to v$($info.Version)?`n`nYour settings are kept. The picker will restart. Open terminal windows are not affected."
                 if ([System.Windows.Forms.MessageBox]::Show($form, $q, 'Update', 'YesNo', 'Question') -ne 'Yes') { return }
                 if ($ctx.InstTask) { return }
                 $form.Cursor = [System.Windows.Forms.Cursors]::AppStarting; $status.Text = 'Updating...'
@@ -2789,7 +2810,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
     $miHealth = $menu.Items.Add('Claude Code data health...')
     $miDiag = $menu.Items.Add('Copy diagnostics (for an issue report)')
     $miLogOpen = $menu.Items.Add('Open the log')
-    $miAbout = $menu.Items.Add('About Workspace Wrangler...')
+    $miAbout = $menu.Items.Add("About $AppName...")
     $miAbout.ToolTipText = 'Version, links and the full concept art.'
     $miCfg.ToolTipText = 'Open config.json (global defaults) in your editor. Changes apply the next time the picker starts.'
     $miPre.ToolTipText = 'Open presets.json (per-project extra tabs, apps, Claude arguments, tab color) in your editor.'
@@ -2898,7 +2919,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
         $filterBox.Focus(); & $refresh
         # Project cost: ask once (opt-in); when on, a background refresh fills the column (also re-reads git state).
         if ($Actions -and $Actions.CostAsk) {
-            $q = "Show what each project has cost?`n`nWorkspace Wrangler can estimate each project's Claude Code cost from the session files Claude Code keeps on this computer (under ~\.claude\projects). It only reads them, keeps just token counts and model names in its own settings folder, and sends nothing anywhere.`n`nYou can change this any time under Settings > Show project cost."
+            $q = "Show what each project has cost?`n`n$AppName can estimate each project's Claude Code cost from the session files Claude Code keeps on this computer (under ~\.claude\projects). It only reads them, keeps just token counts and model names in its own settings folder, and sends nothing anywhere.`n`nYou can change this any time under Settings > Show project cost."
             $ans = [System.Windows.Forms.MessageBox]::Show($form, $q, 'Show project cost?', 'YesNo', 'Question')
             & $Actions.SetCost ($ans -eq [System.Windows.Forms.DialogResult]::Yes)
             if ($ans -eq [System.Windows.Forms.DialogResult]::Yes) { & $Update.Restart; $form.Close(); return }
@@ -2920,7 +2941,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
                 $hk.add_Pressed({
                     # Restore the Wrangler if minimized, then cascade it together with the workspace windows (it ends up on top).
                     if ($form.WindowState -eq [System.Windows.Forms.FormWindowState]::Minimized) { $form.WindowState = [System.Windows.Forms.FormWindowState]::Normal }
-                    try { $n = & $OnCascade $form.Handle.ToInt64(); $status.Text = "Cascaded $n workspace window(s) and the Wrangler." } catch { $status.Text = "Cascade failed: $_" }
+                    try { $n = & $OnCascade $form.Handle.ToInt64(); $status.Text = "Cascaded $n workspace window(s) and the $AppShortName." } catch { $status.Text = "Cascade failed: $_" }
                 }.GetNewClosure())
                 # Make the hotkey discoverable in the app itself.
                 $hotText = [string]$cfg.hotkey
@@ -3477,17 +3498,17 @@ function Set-ProjectRoots([string[]]$Paths) {
 function Show-RootDialog([scriptblock]$Scan, [string]$Message, [string[]]$Current = @()) {
     Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing
     $dlg = New-ThemedForm
-    $dlg.Text = 'Workspace Wrangler: where are your projects?'; $dlg.ClientSize = New-Object System.Drawing.Size(560, 392)
+    $dlg.Text = "${AppName}: where are your projects?"; $dlg.ClientSize = New-Object System.Drawing.Size(560, 392)
     $dlg.FormBorderStyle = 'FixedDialog'; $dlg.MaximizeBox = $false; $dlg.MinimizeBox = $false; $dlg.StartPosition = 'CenterScreen'
     $lbl = New-Object System.Windows.Forms.Label
     $lbl.Location = New-Object System.Drawing.Point(12, 10); $lbl.Size = New-Object System.Drawing.Size(470, 64)
     $logo = Get-ArtImage 'app.png'
     if ($logo) { $pm = New-Object System.Windows.Forms.PictureBox; $pm.Image = $logo; $pm.SizeMode = 'Zoom'; $pm.Location = New-Object System.Drawing.Point(490, 8); $pm.Size = New-Object System.Drawing.Size(58, 58); $dlg.Controls.Add($pm) }
-    $lbl.Text = "$Message`n`nWorkspace Wrangler lists the subfolders of each folder you check as your projects. Check one or more folders."
+    $lbl.Text = "$Message`n`n$AppName lists the subfolders of each folder you check as your projects. Check one or more folders."
     $how = New-Object System.Windows.Forms.Label
     $how.Location = New-Object System.Drawing.Point(12, 80); $how.Size = New-Object System.Drawing.Size(536, 112)
     $how.ForeColor = [System.Drawing.SystemColors]::GrayText
-    $how.Text = "Browse to folders yourself, or let Workspace Wrangler suggest some. Suggesting is optional and only happens if you click the button. It reads, on this computer only:`n  - the project list in Claude Code's settings file (~\.claude.json)`n  - the recent-folders list kept by VS Code (also Insiders, VSCodium, Cursor, Windsurf)`n  - whether folders named code, repos, src, dev, projects or git exist`nIt only looks at folder names; nothing is changed, saved or sent anywhere."
+    $how.Text = "Browse to folders yourself, or let $AppName suggest some. Suggesting is optional and only happens if you click the button. It reads, on this computer only:`n  - the project list in Claude Code's settings file (~\.claude.json)`n  - the recent-folders list kept by VS Code (also Insiders, VSCodium, Cursor, Windsurf)`n  - whether folders named code, repos, src, dev, projects or git exist`nIt only looks at folder names; nothing is changed, saved or sent anywhere."
     $lst = New-Object System.Windows.Forms.CheckedListBox
     $lst.CheckOnClick = $true; $lst.HorizontalScrollbar = $true
     $lst.Location = New-Object System.Drawing.Point(12, 200); $lst.Size = New-Object System.Drawing.Size(536, 110)
@@ -3551,7 +3572,7 @@ function Show-RootDialog([scriptblock]$Scan, [string]$Message, [string[]]$Curren
 # First run (or moved/empty project folders): ask where the projects are instead of failing silently. Picker only; the command-line switches never prompt.
 if (-not $PSBoundParameters.ContainsKey('Root') -and $Picker -eq 'Forms' -and -not ($List -or $All -or $Cascade -or $Focus -or $CheckUpdate -or $Project.Count)) {
     $why = ''
-    if ($firstRun) { $why = 'Welcome! Before the first launch, tell Workspace Wrangler where your projects live.' }
+    if ($firstRun) { $why = "Welcome! Before the first launch, tell $AppName where your projects live." }
     $okRoots = @($Roots | Where-Object { Test-Path -LiteralPath $_ -PathType Container })
     $hasFolders = ($ExtraProjects | Where-Object { Test-Path -LiteralPath $_ -PathType Container }).Count -gt 0
     foreach ($r in $okRoots) { if (@(Get-ChildItem -LiteralPath $r -Directory -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike '.*' }).Count) { $hasFolders = $true; break } }
@@ -3679,7 +3700,7 @@ if ($All) {
     Invoke-Launch @($rows | Select-Object -First $n) ([bool]$Fresh) $false
 } elseif ($Picker -eq 'Grid') {
     $picked = @($rows | Select-Object Name, Relative, LastActive, Branch, Path |
-        Out-GridView -Title 'Workspace Wrangler: select projects (Ctrl/Shift for multiple)' -PassThru)
+        Out-GridView -Title "${AppName}: select projects (Ctrl/Shift for multiple)" -PassThru)
     $sel = @($rows | Where-Object { $picked.Path -contains $_.Path })
     if ($sel.Count -gt 0) { Invoke-Launch $sel ([bool]$Fresh) $true }
 } else {
