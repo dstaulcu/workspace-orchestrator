@@ -2572,11 +2572,29 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
     }.GetNewClosure())
     $lv.Add_ItemSelectionChanged({
         param($s, $e)
-        if ($ctx.Rebuilding -or $ctx.Syncing) { return }
+        if ($ctx.Rebuilding -or $ctx.Syncing -or $ctx.BoxClick) { return }
         if ($e.IsSelected) { [void]$ctx.Checked.Add([string]$e.Item.Tag) } else { [void]$ctx.Checked.Remove([string]$e.Item.Tag) }
         $ctx.Syncing = $true; try { $e.Item.Checked = $e.IsSelected } finally { $ctx.Syncing = $false }   # highlighting ticks the row
         & $showSel
     }.GetNewClosure())
+    # A click on a check box is about that row only. Windows still treats a click on an already highlighted row as "select just
+    # this row" and drops the other highlights when the button comes up, which the mirroring above would turn into unticking
+    # every other project. So while a check box is being clicked, selection changes are ignored, and on release the highlight
+    # is set back to match the ticks.
+    $lv.Add_MouseDown({
+        param($s, $e)
+        $ctx.BoxClick = $false
+        if ($e.Button -ne [System.Windows.Forms.MouseButtons]::Left) { return }
+        $hit = $lv.HitTest($e.X, $e.Y)
+        if ($hit.Item -and $hit.Location -eq [System.Windows.Forms.ListViewHitTestLocations]::StateImage) { $ctx.BoxClick = $true }
+    }.GetNewClosure())
+    $endBoxClick = {
+        if (-not $ctx.BoxClick) { return }
+        $ctx.BoxClick = $false
+        & $setSelection @($ctx.Checked); & $showSel
+    }.GetNewClosure()
+    $lv.Add_MouseUp($endBoxClick)
+    $lv.Add_MouseClick($endBoxClick)   # in case the list reports only the click
     # Right-click acts on the selection: on an unselected row it first selects just that row; on empty space it clears the selection.
     $lv.Add_MouseDown({
         param($s, $e)

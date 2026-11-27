@@ -7,7 +7,7 @@ version when you release.
 ## Unreleased
 
 ### Added
-- **Dark mode.** The picker and its dialogs (New project, Rename, Launch options, Create remote, Add remote, Projects folders, Data health, About) now follow Windows' app mode (**Settings > Personalization > Colors > Choose your default app mode**): dark backgrounds, text boxes, buttons, drop-down lists (including their arrow and open list), list and column headers, menus, tooltips and a dark title bar (with bright caption text on Windows 11). Change the Windows setting while the picker is open and it switches without a restart. The list's colors have dark versions too (open projects stay green, the Remote link stays blue, the branch cue stays orange), its grid lines are a dim gray instead of white, text boxes no longer light up in the accent color when focused, selected rows (one or many) get an even blue highlight with readable text, disabled buttons keep readable text, and the check boxes are drawn where Windows expects the click at any display scaling, so unticking one box leaves the others ticked. Switching back to light restores every control's normal look.
+- **Dark mode.** The picker and its dialogs (New project, Rename, Launch options, Create remote, Add remote, Projects folders, Data health, About) now follow Windows' app mode (**Settings > Personalization > Colors > Choose your default app mode**): dark backgrounds, text boxes, buttons, drop-down lists (including their arrow and open list), list and column headers, menus, tooltips and a dark title bar (with bright caption text on Windows 11). Change the Windows setting while the picker is open and it switches without a restart. The list's colors have dark versions too (open projects stay green, the Remote link stays blue, the branch cue stays orange), its grid lines are a dim gray instead of white, text boxes no longer light up in the accent color when focused, selected rows (one or many) get an even blue highlight with readable text, disabled buttons keep readable text, and the check boxes are drawn where Windows expects the click at any display scaling. Switching back to light restores every control's normal look.
 - **Clear the filter** with the new **x** button beside the Filter box, or press Esc in the box (Esc in an empty box still closes the picker).
 - **Settings > Theme** (Match Windows, Light, Dark), saved as the new `theme` setting in `config.json` (`system`, `light` or `dark`; default `system`). High contrast mode always wins over dark.
 
@@ -16,6 +16,7 @@ version when you release.
 - **Branding in one file.** The app's name, short name, tagline and repository now come from `assets/brand.json`, used by every window title, dialog, message, the help links, the update source and the Desktop shortcut's name. A fork rebrands by editing that file (and the art).
 
 ### Fixed
+- **Unticking one project no longer unticks the others.** Clicking the check box of a ticked row made Windows highlight just that row, and because highlighting and ticking mirror each other, every other project was unticked. A click on a check box now changes only that row.
 - **Launch options** no longer logs an error when a project has no fixed tab color; the color swatch now shows the dialog's background in that case.
 
 ### Known limits
