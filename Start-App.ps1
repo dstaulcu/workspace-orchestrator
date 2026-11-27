@@ -1401,7 +1401,8 @@ public static class WoTheme {
     class Orig {
         public Color Back, Fore, Border, Over, Down, Link, ActiveLink, Visited, DisabledLink;
         public FlatStyle Flat;
-        public bool VisualBack, HeaderHooked, NativeHooked;
+        public bool VisualBack, HeaderHooked, NativeHooked, Grid;
+        public WoGridLines GridPainter;
         public string Role = "";
     }
 
@@ -1433,6 +1434,7 @@ public static class WoTheme {
     internal static Color ButtonDown { get { return Color.FromArgb(85, 85, 85); } }
     internal static Color HeaderBack { get { return Color.FromArgb(45, 45, 45); } }
     internal static Color HeaderLine { get { return Color.FromArgb(70, 70, 70); } }
+    internal static Color GridLine { get { return Color.FromArgb(58, 58, 58); } }
     internal static Color MenuBack { get { return Color.FromArgb(43, 43, 43); } }
     internal static Color MenuHover { get { return Color.FromArgb(65, 65, 65); } }
     internal static Color CheckBack { get { return Color.FromArgb(60, 90, 130); } }
@@ -1592,6 +1594,8 @@ public static class WoTheme {
         }
         ComboBox cb = c as ComboBox;
         if (cb != null) o.Flat = cb.FlatStyle;
+        ListView lv = c as ListView;
+        if (lv != null) o.Grid = lv.GridLines;
         LinkLabel ll = c as LinkLabel;
         if (ll != null) { o.Link = ll.LinkColor; o.ActiveLink = ll.ActiveLinkColor; o.Visited = ll.VisitedLinkColor; o.DisabledLink = ll.DisabledLinkColor; }
         else if (c is Label) {
@@ -1646,6 +1650,12 @@ public static class WoTheme {
                     o.HeaderHooked = true;
                 }
                 lv.OwnerDraw = dark;   // only the column headers are drawn by us; rows stay native
+                if (o.Grid) {
+                    // Windows draws list grid lines in a fixed light color, so in dark mode they are turned off and drawn dim by WoGridLines.
+                    if (dark && o.GridPainter == null) o.GridPainter = new WoGridLines(lv);
+                    lv.GridLines = !dark;
+                    lv.Invalidate();
+                }
             }
             if (!(c is TextBox) || ((TextBox)c).Multiline) Native(c, o);
         }
@@ -1697,6 +1707,45 @@ public static class WoTheme {
         using (Pen p = new Pen(Border)) e.Graphics.DrawRectangle(p, r.X, r.Y, r.Width - 1, r.Height - 1);
         Rectangle tr = new Rectangle(r.X + 3, r.Y, Math.Max(0, r.Width - 4), r.Height);
         TextRenderer.DrawText(e.Graphics, e.ToolTipText, e.Font, tr, Fore, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+    }
+}
+
+// Draws dim grid lines over a details-view ListView after Windows paints it (dark mode only, native grid lines off).
+public class WoGridLines : NativeWindow {
+    readonly ListView lv;
+    public WoGridLines(ListView l) {
+        lv = l;
+        l.HandleCreated += OnHandleCreated;
+        l.HandleDestroyed += OnHandleDestroyed;
+        if (l.IsHandleCreated) AssignHandle(l.Handle);
+    }
+    void OnHandleCreated(object sender, EventArgs e) { if (Handle == IntPtr.Zero) AssignHandle(lv.Handle); }
+    void OnHandleDestroyed(object sender, EventArgs e) { ReleaseHandle(); }
+    protected override void WndProc(ref Message m) {
+        base.WndProc(ref m);
+        if (m.Msg == 0x000F && WoTheme.Dark && !lv.GridLines) { try { Draw(); } catch { } }   // WM_PAINT
+    }
+    void Draw() {
+        if (lv.IsDisposed || lv.View != View.Details || lv.Items.Count == 0) return;
+        ListViewItem first = lv.TopItem;
+        if (first == null) return;
+        Rectangle fb = first.Bounds;
+        int h = fb.Height;
+        if (h <= 0) return;
+        Rectangle cr = lv.ClientRectangle;
+        int yEnd = Math.Min(cr.Bottom, fb.Top + (lv.Items.Count - first.Index) * h);
+        ColumnHeader[] cols = new ColumnHeader[lv.Columns.Count];
+        foreach (ColumnHeader c in lv.Columns) { if (c.DisplayIndex >= 0 && c.DisplayIndex < cols.Length) cols[c.DisplayIndex] = c; }
+        using (Graphics g = lv.CreateGraphics())
+        using (Pen p = new Pen(WoTheme.GridLine)) {
+            for (int y = fb.Top + h - 1; y < yEnd; y += h) g.DrawLine(p, cr.Left, y, cr.Right, y);
+            int x = fb.Left;   // includes the horizontal scroll offset
+            foreach (ColumnHeader c in cols) {
+                if (c == null) continue;
+                x += c.Width;
+                if (x - 1 >= cr.Left && x - 1 < cr.Right) g.DrawLine(p, x - 1, fb.Top, x - 1, yEnd - 1);
+            }
+        }
     }
 }
 
