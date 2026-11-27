@@ -1384,6 +1384,7 @@ using System.Drawing.Drawing2D;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
+using System.Windows.Forms.VisualStyles;
 using Microsoft.Win32;
 
 // Light/dark theme for the WinForms UI (C# 5: Windows PowerShell 5.1 compiles Add-Type code with the .NET Framework compiler).
@@ -1403,7 +1404,7 @@ public static class WoTheme {
         public Color Back, Fore, Border, Over, Down, Link, ActiveLink, Visited, DisabledLink;
         public FlatStyle Flat;
         public BorderStyle Box;
-        public bool VisualBack, HeaderHooked, NativeHooked, Grid;
+        public bool VisualBack, HeaderHooked, NativeHooked, Grid, PaintHooked;
         public WoGridLines GridPainter;
         public string Role = "";
     }
@@ -1437,6 +1438,7 @@ public static class WoTheme {
     internal static Color HeaderBack { get { return Color.FromArgb(45, 45, 45); } }
     internal static Color HeaderLine { get { return Color.FromArgb(70, 70, 70); } }
     internal static Color GridLine { get { return Color.FromArgb(58, 58, 58); } }
+    internal static Color SelectBack { get { return Color.FromArgb(38, 79, 120); } }
     internal static Color MenuBack { get { return Color.FromArgb(43, 43, 43); } }
     internal static Color MenuHover { get { return Color.FromArgb(65, 65, 65); } }
     internal static Color CheckBack { get { return Color.FromArgb(60, 90, 130); } }
@@ -1621,6 +1623,7 @@ public static class WoTheme {
                 b.FlatStyle = FlatStyle.Flat; b.UseVisualStyleBackColor = false;
                 b.BackColor = ButtonBack; b.ForeColor = Fore;
                 b.FlatAppearance.BorderColor = Border; b.FlatAppearance.MouseOverBackColor = ButtonHover; b.FlatAppearance.MouseDownBackColor = ButtonDown;
+                if (!o.PaintHooked) { b.Paint += OnButtonPaint; o.PaintHooked = true; }
             } else {
                 b.FlatStyle = o.Flat; b.BackColor = o.Back; b.ForeColor = o.Fore;
                 b.FlatAppearance.BorderColor = o.Border; b.FlatAppearance.MouseOverBackColor = o.Over; b.FlatAppearance.MouseDownBackColor = o.Down;
@@ -1704,8 +1707,40 @@ public static class WoTheme {
         string text = e.Header == null ? "" : e.Header.Text;
         TextRenderer.DrawText(e.Graphics, text, e.Font, Rectangle.Inflate(r, -6, 0), Fore, f);
     }
-    static void OnDrawItem(object sender, DrawListViewItemEventArgs e) { e.DrawDefault = true; }
-    static void OnDrawSubItem(object sender, DrawListViewSubItemEventArgs e) { e.DrawDefault = true; }
+    // A disabled flat button draws its text in a gray that vanishes on a dark background; draw it lighter.
+    static void OnButtonPaint(object sender, PaintEventArgs e) {
+        Button b = sender as Button;
+        if (!dark || b == null || b.Enabled || b.Image != null) return;
+        Rectangle r = b.ClientRectangle;
+        using (SolidBrush bg = new SolidBrush(ButtonBack)) e.Graphics.FillRectangle(bg, r);
+        using (Pen p = new Pen(Border)) e.Graphics.DrawRectangle(p, r.X, r.Y, r.Width - 1, r.Height - 1);
+        TextRenderer.DrawText(e.Graphics, b.Text, b.Font, r, Disabled, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
+    }
+
+    // Rows stay native, except selected rows in dark mode: the native theme draws the first column's text black there.
+    static bool DrawSelected(ListViewItem it) { return dark && it != null && it.Selected && it.ListView != null && it.ListView.View == View.Details; }
+    static void OnDrawItem(object sender, DrawListViewItemEventArgs e) { e.DrawDefault = !DrawSelected(e.Item); }
+    static void OnDrawSubItem(object sender, DrawListViewSubItemEventArgs e) {
+        if (!DrawSelected(e.Item) || e.SubItem == null) { e.DrawDefault = true; return; }
+        Rectangle b = e.Bounds;
+        if (e.ColumnIndex == 0 && e.Header != null) b = new Rectangle(b.X, b.Y, e.Header.Width, b.Height);   // column 0 reports the whole row
+        using (SolidBrush bg = new SolidBrush(SelectBack)) e.Graphics.FillRectangle(bg, b);
+        Rectangle tr = new Rectangle(b.X + 3, b.Y, Math.Max(0, b.Width - 4), b.Height);
+        if (e.ColumnIndex == 0 && e.Item.ListView.CheckBoxes) {
+            CheckBoxState cs = e.Item.Checked ? CheckBoxState.CheckedNormal : CheckBoxState.UncheckedNormal;
+            Size gs = CheckBoxRenderer.GetGlyphSize(e.Graphics, cs);
+            CheckBoxRenderer.DrawCheckBox(e.Graphics, new Point(b.X + 4 + Math.Max(0, (16 - gs.Width) / 2), b.Y + Math.Max(0, (b.Height - gs.Height) / 2)), cs);
+            tr = new Rectangle(b.X + 20, b.Y, Math.Max(0, b.Width - 21), b.Height);
+        }
+        bool own = !e.Item.UseItemStyleForSubItems;
+        Color fc = own ? e.SubItem.ForeColor : e.Item.ForeColor;
+        Font font = (own ? e.SubItem.Font : e.Item.Font) ?? e.Item.ListView.Font;
+        if (e.ColumnIndex == 0) fc = Fore;
+        TextFormatFlags f = TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix;
+        HorizontalAlignment a = e.Header == null ? HorizontalAlignment.Left : e.Header.TextAlign;
+        if (a == HorizontalAlignment.Right) f |= TextFormatFlags.Right; else if (a == HorizontalAlignment.Center) f |= TextFormatFlags.HorizontalCenter; else f |= TextFormatFlags.Left;
+        TextRenderer.DrawText(e.Graphics, e.SubItem.Text, font, tr, fc, f);
+    }
 
     static void OnTipDraw(object sender, DrawToolTipEventArgs e) {
         if (!dark) { e.DrawBackground(); e.DrawBorder(); e.DrawText(); return; }
