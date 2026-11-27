@@ -35,7 +35,7 @@ $procs = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorA
     Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -match $pattern -and $_.CommandLine -match '-WindowStyle\s+Hidden' -and $_.CommandLine -notmatch '-(List|DryRun|CheckUpdate|Focus)' -and $_.CommandLine -notmatch 'Uninstall-' })
 $WhatIfPreference = $wi
 foreach ($p in $procs) {
-    if ($PSCmdlet.ShouldProcess("process $($p.ProcessId)", 'Stop running Workspace Wrangler picker')) {
+    if ($PSCmdlet.ShouldProcess("process $($p.ProcessId)", 'Stop running picker')) {
         Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue; $removed++
     }
 }
