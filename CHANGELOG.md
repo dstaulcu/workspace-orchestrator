@@ -4,7 +4,7 @@ All notable changes to Workspace Wrangler. Newest first. The picker opens this f
 and offers it after an update. Add new entries under **Unreleased** as you work; rename that heading to the
 version when you release.
 
-## Unreleased
+## 1.10.0 - 2026-11-27
 
 ### Added
 - **Dark mode.** The picker and its dialogs (New project, Rename, Launch options, Create remote, Add remote, Projects folders, Data health, About) now follow Windows' app mode (**Settings > Personalization > Colors > Choose your default app mode**): dark backgrounds, text boxes, buttons, drop-down lists (including their arrow and open list), list and column headers, menus, tooltips and a dark title bar (with bright caption text on Windows 11). Change the Windows setting while the picker is open and it switches without a restart. The list's colors have dark versions too (open projects stay green, the Remote link stays blue, the branch cue stays orange), its grid lines are a dim gray instead of white, text boxes no longer light up in the accent color when focused, selected rows (one or many) get an even blue highlight with readable text, disabled buttons keep readable text, and the check boxes are drawn where Windows expects the click at any display scaling. Switching back to light restores every control's normal look.
