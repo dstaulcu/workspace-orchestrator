@@ -1401,6 +1401,7 @@ public static class WoTheme {
     class Orig {
         public Color Back, Fore, Border, Over, Down, Link, ActiveLink, Visited, DisabledLink;
         public FlatStyle Flat;
+        public BorderStyle Box;
         public bool VisualBack, HeaderHooked, NativeHooked, Grid;
         public WoGridLines GridPainter;
         public string Role = "";
@@ -1596,6 +1597,8 @@ public static class WoTheme {
         if (cb != null) o.Flat = cb.FlatStyle;
         ListView lv = c as ListView;
         if (lv != null) o.Grid = lv.GridLines;
+        TextBox tb = c as TextBox;
+        if (tb != null) o.Box = tb.BorderStyle;
         LinkLabel ll = c as LinkLabel;
         if (ll != null) { o.Link = ll.LinkColor; o.ActiveLink = ll.ActiveLinkColor; o.Visited = ll.VisitedLinkColor; o.DisabledLink = ll.DisabledLinkColor; }
         else if (c is Label) {
@@ -1643,6 +1646,9 @@ public static class WoTheme {
         }
         if (c is TextBoxBase || c is ListBox || c is ListView || c is TreeView || c is UpDownBase) {
             c.BackColor = dark ? Field : o.Back; c.ForeColor = dark ? FieldFore : o.Fore;
+            TextBox tb = c as TextBox;
+            // The themed 3D border lights up in the Windows accent color on focus; a plain single border stays quiet in dark mode.
+            if (tb != null && o.Box == BorderStyle.Fixed3D) tb.BorderStyle = dark ? BorderStyle.FixedSingle : o.Box;
             ListView lv = c as ListView;
             if (lv != null) {
                 if (!o.HeaderHooked) {
@@ -2078,7 +2084,10 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
     $btnNew = New-Object System.Windows.Forms.Button
     $btnNew.Text = '+ New project'; $btnNew.Location = New-Object System.Drawing.Point(440, 10); $btnNew.Size = New-Object System.Drawing.Size(90, 26)
     $filterBox = New-Object System.Windows.Forms.TextBox
-    $filterBox.Location = New-Object System.Drawing.Point(60, 12); $filterBox.Width = 240; $filterBox.Text = $InitialFilter
+    $filterBox.Location = New-Object System.Drawing.Point(60, 12); $filterBox.Width = 212; $filterBox.Text = $InitialFilter
+    $btnClearFilter = New-Object System.Windows.Forms.Button
+    $btnClearFilter.Text = [string][char]0x00D7; $btnClearFilter.Location = New-Object System.Drawing.Point(275, 11); $btnClearFilter.Size = New-Object System.Drawing.Size(26, 25)
+    $btnClearFilter.TabStop = $false; $btnClearFilter.Enabled = ($filterBox.TextLength -gt 0)
     $stateBox = New-Object System.Windows.Forms.ComboBox
     $stateBox.DropDownStyle = 'DropDownList'; $stateBox.Location = New-Object System.Drawing.Point(308, 12); $stateBox.Width = 124
     [void]$stateBox.Items.AddRange(@('All projects', 'Dirty (uncommitted)', 'Clean', 'Open in terminal', 'Not open', 'Not a git repo')); $stateBox.SelectedIndex = 0
@@ -2261,12 +2270,13 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
     $btnClose   = New-Btn 'Close' 1040
     $btnClose.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
     $form.AcceptButton = $btnGo; $form.CancelButton = $btnClose
-    $form.Controls.AddRange(@($lbl, $filterBox, $stateBox, $btnNew, $hint, $updLink, $lv, $status, $help, $btnSettings, $btnIde, $btnGit, $btnArrange, $btnRefresh, $btnSwitch, $btnGo, $btnClose))
+    $form.Controls.AddRange(@($lbl, $filterBox, $btnClearFilter, $stateBox, $btnNew, $hint, $updLink, $lv, $status, $help, $btnSettings, $btnIde, $btnGit, $btnArrange, $btnRefresh, $btnSwitch, $btnGo, $btnClose))
 
     $ctrlTip = New-ThemedToolTip
     $ctrlTip.InitialDelay = 400; $ctrlTip.AutoPopDelay = 12000
     $ctrlTip.SetToolTip($btnNew, 'Create a new project folder in your projects folder: optionally run git init, add a README and open it in your IDE. The list reloads with it pre-checked.')
-    $ctrlTip.SetToolTip($filterBox, 'Type to narrow the list by project name, path or branch. Selected projects stay selected while you filter.')
+    $ctrlTip.SetToolTip($filterBox, 'Type to narrow the list by project name, path or branch. Selected projects stay selected while you filter. Esc clears it.')
+    $ctrlTip.SetToolTip($btnClearFilter, 'Clear the filter (Esc in the filter box).')
     $ctrlTip.SetToolTip($stateBox, 'Show only projects in a given state: dirty (uncommitted changes), clean, open in a terminal, not open, or not a git repo. Combines with the text filter. Click a column header to sort.')
     $ctrlTip.SetToolTip($btnSettings, 'Edit config.json (global defaults) or presets.json (per-project overrides) in your default editor (changes apply the next time the picker starts), or save the positions of your open project windows so Launch restores them. Theme switches between light and dark.')
     $ctrlTip.SetToolTip($btnIde, 'Open the selected projects in your IDE, one new window per project. Visual Studio Code by default; set "ide" (and "ideArgs") in config.json to use another.')
@@ -2424,7 +2434,14 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
             & $setSelection (@($ctx.Checked) + @($lv.Items | ForEach-Object { [string]$_.Tag })); & $showSel; $e.SuppressKeyPress = $true
         }
     }.GetNewClosure())
-    $filterBox.Add_TextChanged({ & $fill }.GetNewClosure())
+    $filterBox.Add_TextChanged({ $btnClearFilter.Enabled = ($filterBox.TextLength -gt 0); & $fill }.GetNewClosure())
+    $btnClearFilter.Add_Click({ $filterBox.Clear(); [void]$filterBox.Focus() }.GetNewClosure())
+    # Esc in a non-empty filter box clears it; in an empty one it still closes the picker (the form's Cancel button).
+    $filterBox.Add_PreviewKeyDown({ param($s, $e) if ($e.KeyCode -eq [System.Windows.Forms.Keys]::Escape -and $filterBox.TextLength -gt 0) { $e.IsInputKey = $true } }.GetNewClosure())
+    $filterBox.Add_KeyDown({
+        param($s, $e)
+        if ($e.KeyCode -eq [System.Windows.Forms.Keys]::Escape -and $filterBox.TextLength -gt 0) { $filterBox.Clear(); $e.Handled = $true; $e.SuppressKeyPress = $true }
+    }.GetNewClosure())
     $stateBox.Add_SelectedIndexChanged({ & $fill; $status.Text = '{0} of {1} project(s) shown.' -f $lv.Items.Count, @($Rows).Count }.GetNewClosure())
     # Click a column header to sort by it; click again to reverse. Dates, Open and State start with the most useful end first.
     $ctx.SortCol = -1; $ctx.SortDesc = $false

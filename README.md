@@ -40,7 +40,7 @@ To try it without installing: `powershell.exe -NoProfile -ExecutionPolicy Bypass
 
 ## Using the picker
 
-Select projects by ticking their boxes, or by Ctrl-clicking and Shift-clicking rows (Ctrl+A selects everything shown): ticking and highlighting are the same selection, and it stays selected while you filter. Then press **Launch** (or Enter). Type in the filter box to narrow the list by name, path or branch, use the dropdown beside it to show only dirty, clean, open, not-open or non-git projects, and click a column header to sort.
+Select projects by ticking their boxes, or by Ctrl-clicking and Shift-clicking rows (Ctrl+A selects everything shown): ticking and highlighting are the same selection, and it stays selected while you filter. Then press **Launch** (or Enter). Type in the filter box to narrow the list by name, path or branch (the **x** beside it, or Esc, clears it), use the dropdown beside it to show only dirty, clean, open, not-open or non-git projects, and click a column header to sort.
 
 | Button | What it does |
 |---|---|
