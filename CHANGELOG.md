@@ -4,6 +4,11 @@ All notable changes to Workspace Wrangler. Newest first. The picker opens this f
 and offers it after an update. Add new entries under **Unreleased** as you work; rename that heading to the
 version when you release.
 
+## 1.8.0 - 2026-11-27
+
+### Added
+- **Git > Rename branch to main...** renames an existing repository's current branch to `main` after showing the exact commands and asking. With no commits it only changes the branch name; with commits it runs `git branch -m <old> main`. If `origin` has the old branch, it also pushes `main` and sets it as upstream (the old remote branch is left in place, and you are told to switch the host's default branch and delete it when ready). It refuses when `main` already exists, when HEAD is detached, or when the branch is already `main`. The result message also says what happened on origin (nothing to rename when it has no branches yet, or when the old branch was never pushed).
+
 ## 1.7.2 - 2026-11-27
 
 ### Changed

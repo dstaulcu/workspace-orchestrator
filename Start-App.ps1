@@ -57,7 +57,7 @@ param(
 )
 
 # ---------------------------------------------------------------- config / state
-$AppVersion = '1.7.2'   # bump on every release; the update check compares it with the latest GitHub release tag
+$AppVersion = '1.8.0'   # bump on every release; the update check compares it with the latest GitHub release tag
 $cfg = @{
     root = 'C:\code'; roots = @(); projects = @(); top = 0; ignore = @()
     noiseDirs = @('.git','node_modules','.venv','venv','__pycache__','dist','build','.next','bin','obj','.idea','.vscode')
@@ -830,6 +830,23 @@ function Get-DiagnosticsText {
     & $mask ($lines -join "`r`n")
 }
 
+# What "Rename branch to main" would do in $Dir (used for the confirmation text and the action itself).
+function Get-RenameMainPlan([string]$Dir) {
+    $p = [pscustomobject]@{ Ok = $false; Message = ''; Cur = ''; HasCommits = $false; Origin = ''; Commands = @() }
+    if (-not (Test-Path -LiteralPath (Join-Path $Dir '.git'))) { $p.Message = 'This folder is not a git repository.'; return $p }
+    $p.Cur = "$(& git -C $Dir symbolic-ref --short HEAD 2>$null)".Trim()
+    if (-not $p.Cur) { $p.Message = 'HEAD is detached; check out a branch first.'; return $p }
+    if ($p.Cur -eq 'main') { $p.Message = "The current branch is already 'main'."; return $p }
+    & git -C $Dir show-ref --verify --quiet refs/heads/main 2>$null
+    if ($LASTEXITCODE -eq 0) { $p.Message = "A branch named 'main' already exists in this repository; nothing was changed."; return $p }
+    & git -C $Dir rev-parse --verify --quiet HEAD 2>$null | Out-Null
+    $p.HasCommits = ($LASTEXITCODE -eq 0)
+    $p.Origin = "$(& git -C $Dir remote get-url origin 2>$null)".Trim()
+    if ($p.HasCommits) { $p.Commands += "git branch -m $($p.Cur) main" } else { $p.Commands += 'git symbolic-ref HEAD refs/heads/main   (no commits yet, so only the branch name is changed)' }
+    if ($p.Origin -and $p.HasCommits) { $p.Commands += 'git push -u origin main   (only if the remote has the old branch; the old branch is left in place)' }
+    $p.Ok = $true; $p
+}
+
 function Invoke-GitOp([string]$Op, [string]$Dir, $Opts) {
     $r = [pscustomobject]@{ Ok = $false; Message = '' }
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) { $r.Message = 'git was not found on PATH.'; return $r }
@@ -935,6 +952,27 @@ function Invoke-GitOp([string]$Op, [string]$Dir, $Opts) {
                     if ($err) { $r.Message = $err; return $r }
                     $r.Ok = $true; $r.Message = "Added $($u.Trim()) as origin."
                     if ($push) { $r.Message += ' Pushed the current branch.' }
+                }
+            }
+        }
+        'rename-main' {
+            $plan = Get-RenameMainPlan $Dir
+            if (-not $plan.Ok) { $r.Message = $plan.Message; return $r }
+            if ($DryRun) { $r.Message = "Dry run: would run: $($plan.Commands -join '; ')"; return $r }
+            if ($plan.HasCommits) {
+                $out = (& git -C $Dir branch -m $plan.Cur main 2>&1 | ForEach-Object { "$_" } | Out-String).Trim()
+                if ($LASTEXITCODE -ne 0) { $r.Message = "Could not rename the branch: $out"; return $r }
+            } else { & git -C $Dir symbolic-ref HEAD refs/heads/main 2>$null }
+            $r.Ok = $true; $r.Message = "Renamed branch '$($plan.Cur)' to 'main'."
+            if ($plan.Origin -and -not $plan.HasCommits) { $r.Message += " Nothing was changed on origin: it has no branches yet because this repository has no commits. After your first commit, 'git push -u origin main' creates main there." }
+            if ($plan.Origin -and $plan.HasCommits) {
+                $heads = (& git -C $Dir ls-remote --heads origin $plan.Cur 2>&1 | ForEach-Object { "$_" } | Out-String).Trim()
+                if ($LASTEXITCODE -ne 0) { $r.Message += " The remote could not be reached, so nothing was pushed (run 'git push -u origin main' when it is)." }
+                elseif (-not $heads) { $r.Message += " Nothing was changed on origin: it does not have a '$($plan.Cur)' branch (the old branch was never pushed). Push with 'git push -u origin main' when you are ready." }
+                elseif ($heads) {
+                    $po = (& git -C $Dir push -u origin main 2>&1 | ForEach-Object { "$_" } | Out-String).Trim()
+                    if ($LASTEXITCODE -ne 0) { $r.Message += " Pushing main to origin failed: $(($po -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -Last 1))" }
+                    else { $r.Message += " Pushed main to origin and set it as upstream. The old branch '$($plan.Cur)' still exists on the remote: make main the default branch on the host, then delete the old one there when you are ready." }
                 }
             }
         }
@@ -1090,6 +1128,13 @@ function Invoke-PickerGitOp([string]$Op, $Row, $OwnerForm, [string]$PresetOwner 
             $opts | Add-Member -NotePropertyName Host -NotePropertyValue ([string]$hostName)
             $opts | Add-Member -NotePropertyName PersonalLogin -NotePropertyValue ([string]$login)
             $res = Invoke-GitOp 'remote' $Row.Path $opts
+        }
+        'rename-main' {
+            $plan = Get-RenameMainPlan $Row.Path
+            if (-not $plan.Ok) { return $plan.Message }
+            $q = "Rename the branch '$($plan.Cur)' to 'main' in this project?`n`n$($Row.Path)`n`nThis will run:`n  " + ($plan.Commands -join "`n  ") + "`n`nNothing is deleted. Your files and history are untouched."
+            if ([System.Windows.Forms.MessageBox]::Show($OwnerForm, $q, 'Rename branch to main', 'YesNo', 'Question') -ne [System.Windows.Forms.DialogResult]::Yes) { return 'Cancelled.' }
+            $res = Invoke-GitOp 'rename-main' $Row.Path $null
         }
         'addurl' {
             $opts = Show-AddRemoteDialog $OwnerForm $Row.Name ($isGit -and (Test-GitHasCommits $Row.Path))
@@ -1942,7 +1987,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
         $status.Text = $msg
         # The status line alone is easy to miss (and the window refreshes it when it is re-activated after a dialog), so show the outcome.
         if ($msg -and $msg -ne 'Cancelled.') {
-            $good = ($msg -match '^(Created|Initialized|Added|Dry run)')
+            $good = ($msg -match '^(Created|Initialized|Added|Renamed|Dry run)')
             $ic = $(if ($good) { 'Information' } else { 'Warning' })
             $tail = ''; if (-not $good) { $tail = "`n`nThis is in the log; Settings > Copy diagnostics puts it on the clipboard for an issue report." }
             [void][System.Windows.Forms.MessageBox]::Show($form, ($msg + $tail), 'Git', 'OK', $ic)
@@ -1971,8 +2016,9 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
         $mRemote = New-Object System.Windows.Forms.ToolStripMenuItem 'Create remote repository'
         [void]$items.Add($mRemote)
         $mUrl = $items.Add('Add existing remote URL...')
+        $mRen = $items.Add('Rename branch to main...')
         if (-not $row) {
-            foreach ($mi in @($mOpen, $mInit, $mRemote, $mUrl)) { $mi.Enabled = $false; $mi.ToolTipText = 'Select a project first.' }
+            foreach ($mi in @($mOpen, $mInit, $mRemote, $mUrl, $mRen)) { $mi.Enabled = $false; $mi.ToolTipText = 'Select a project first.' }
             return
         }
         $mOpen.Enabled = [bool]$row.RemoteUrl
@@ -1986,6 +2032,9 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
         $mUrl.Enabled = -not $row.RemoteUrl
         $mUrl.ToolTipText = $(if ($row.RemoteUrl) { 'This project already has a remote.' } else { 'Attach a repository you already created on any host, by URL.' })
         $mUrl.Tag = @{ Fn = $runGit; A = @('addurl', '') }; $mUrl.Add_Click($menuClick)
+        $mRen.Enabled = ($isGit -and [string]$row.Branch -ne 'main' -and [string]$row.Branch -ne '')
+        $mRen.ToolTipText = $(if (-not $isGit) { 'Not a git repository.' } elseif ([string]$row.Branch -eq 'main') { "Already on 'main'." } else { "Rename '$($row.Branch)' to 'main' (asks first and shows the commands; the old branch on a remote is left in place)." })
+        $mRen.Tag = @{ Fn = $runGit; A = @('rename-main', '') }; $mRen.Add_Click($menuClick)
         # Submenu per provider; configured targets (gitOpsTargets) are listed first, then "Other...".
         foreach ($pv in 'github','gitlab','azure') {
             $label = @{ github = 'GitHub'; gitlab = 'GitLab'; azure = 'Azure DevOps' }[$pv]
