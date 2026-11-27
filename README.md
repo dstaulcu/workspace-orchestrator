@@ -62,6 +62,22 @@ For a fresh Claude conversation use right-click > **Launch > Claude session**, o
 
 **Window layout:** new windows are cascaded (`arrangeStyle`: `cascade`, `grid`, `columns`, `rows`). **Settings > Save window layout** remembers where each open project's window is, per monitor setup, and later launches put them back.
 
+## Branch names (main, not master)
+
+- **New repositories start on `main`.** The Git menu's init, **+ New project** and **Create remote repository** use `git init -b main` (set `defaultBranch` in `config.json` to change it; your own git `init.defaultBranch` wins).
+- **Renaming is local-only.** **Git > Rename branch to main...** works only when there is no `origin`, or `origin` has no branches yet. If `origin` already has branches it changes nothing, because the host owns the default branch, pull request targets and branch protection.
+- **Renaming on the host is yours to do**, on the host, then sync this clone:
+
+  ```
+  # GitHub: Settings > Branches > rename "master" to "main" (this retargets open pull requests), then here:
+  git fetch origin --prune
+  git branch -m master main
+  git branch -u origin/main main
+  git remote set-head origin -a
+  ```
+- **A cue when the two sides disagree.** If this clone is on `main` but remembers origin's default as `master` (or the reverse), the Branch cell turns orange and its hover explains which command fixes it. It reads a local ref only, so it costs no network call.
+- **Creating a remote from a `master` branch** warns that `master` becomes the host's default branch.
+
 ## Project cost (optional)
 
 The first time you start the picker it asks whether to show what each project has cost. If you say yes, a **Cost** column appears with each project's estimated API-equivalent Claude Code cost; hover a value for sessions, the last 7 and 30 days and the cost by model. It is computed from the session files Claude Code keeps under `~\.claude\projects` (read-only, local, nothing is sent; subagents included). The Wrangler keeps only token counts and model names in its own `costs.json`, so totals survive Claude Code deleting old sessions. Prices are list prices from `assets/model-prices.json` (add or change models in `~\.config\workspace_app\model-prices.json`); a `~` before an amount means some models are not in the table yet. It is an estimate of what the tokens would cost at API prices, not what a subscription plan bills. Turn it on or off under **Settings > Show project cost**.

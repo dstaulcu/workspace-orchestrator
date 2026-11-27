@@ -4,6 +4,12 @@ All notable changes to Workspace Wrangler. Newest first. The picker opens this f
 and offers it after an update. Add new entries under **Unreleased** as you work; rename that heading to the
 version when you release.
 
+## 1.8.2 - 2026-11-27
+
+### Added
+- **Branch name cue.** When a clone is on `main` but remembers origin's default branch as `master` (or the reverse), typically after renaming on only one side, the Branch cell turns orange and its hover explains which command fixes it (`git remote set-head origin -a`, or the fetch / rename / upstream sequence). It reads git's local `origin/HEAD` ref, so there is no network call; feature branches and matching repositories show nothing.
+- README section **Branch names (main, not master)** with the policy and the exact host-side rename and local sync sequence.
+
 ## 1.8.1 - 2026-11-27
 
 ### Changed

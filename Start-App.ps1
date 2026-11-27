@@ -57,7 +57,7 @@ param(
 )
 
 # ---------------------------------------------------------------- config / state
-$AppVersion = '1.8.1'   # bump on every release; the update check compares it with the latest GitHub release tag
+$AppVersion = '1.8.2'   # bump on every release; the update check compares it with the latest GitHub release tag
 $cfg = @{
     root = 'C:\code'; roots = @(); projects = @(); top = 0; ignore = @()
     noiseDirs = @('.git','node_modules','.venv','venv','__pycache__','dist','build','.next','bin','obj','.idea','.vscode')
@@ -352,6 +352,17 @@ function Get-ProjectCostSummary($Ledger, [string]$Enc, $Prices) {
     [pscustomobject]@{ Sessions = $sess.Count; Total = $tot; Incomplete = ($unk.Count -gt 0); Tip = $tip }
 }
 
+# Hint when this clone's branch and origin's default branch are the main/master pair but differ (typical after a rename on one side only).
+function Get-BranchNameHint([string]$Branch, [string]$OriginHead) {
+    if ($Branch -eq 'main' -and $OriginHead -eq 'master') {
+        return "This clone is on 'main', but it last learned that origin's default branch is 'master'.`nIf you already renamed it to 'main' on the host: git remote set-head origin -a`nIf the host still uses 'master', your local 'main' is a separate branch until you push it (git push -u origin main) and change the host's default branch there."
+    }
+    if ($Branch -eq 'master' -and $OriginHead -eq 'main') {
+        return "Origin's default branch is 'main', but this clone is still on 'master'.`nTo follow it:`n  git fetch origin --prune`n  git branch -m master main`n  git branch -u origin/main main`n(The Git > Rename branch to main... item will not do this for you, because origin has branches: the host owns that.)"
+    }
+    ''
+}
+
 function Set-RowCost($Row) {
     $Row.CostUsd = $null; $Row.CostText = ''; $Row.CostTip = ''
     if (-not $script:CostOn) { return }
@@ -377,7 +388,7 @@ function ConvertTo-RemoteWebUrl([string]$Remote) {
 
 function Get-GitInfo([string]$Dir) {
     if (-not (Test-Path -LiteralPath (Join-Path $Dir '.git'))) { return $null }
-    $branch = ''; $dirty = $null; $url = $null
+    $branch = ''; $dirty = $null; $url = $null; $originHead = ''
     try {
         # One call for branch + dirty state (porcelain v2: "# branch.head <name>" header, then one line per change).
         $st = @(& git -C $Dir status --porcelain=v2 --branch 2>$null)
@@ -386,6 +397,8 @@ function Get-GitInfo([string]$Dir) {
             if ($bl) { $b = ([string]$bl).Substring(14).Trim(); if ($b -ne '(detached)') { $branch = $b } }
             $dirty = [bool]($st | Where-Object { $_ -and -not ([string]$_).StartsWith('#') } | Select-Object -First 1)
         }
+        $oh = "$(& git -C $Dir symbolic-ref --short refs/remotes/origin/HEAD 2>$null)".Trim()   # what this clone last learned origin's default branch is (a local ref, no network)
+        if ($oh -like 'origin/*') { $originHead = $oh.Substring(7) }
         # One call for every remote URL. Prefer "origin"; otherwise the first remote with a browsable URL.
         $remotes = @()
         foreach ($l in @(& git -C $Dir config --get-regexp '^remote\..+\.url$' 2>$null)) {
@@ -397,7 +410,7 @@ function Get-GitInfo([string]$Dir) {
             if ($u) { $url = $u; break }
         }
     } catch { }
-    [pscustomobject]@{ Branch = $branch; Dirty = $dirty; RemoteUrl = $url }
+    [pscustomobject]@{ Branch = $branch; Dirty = $dirty; RemoteUrl = $url; OriginHead = $originHead }
 }
 
 # Last-active time and git info for many projects at once. Each project costs one or two git processes (or a
@@ -1611,13 +1624,16 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
         $overLink = $false
         if ($hit.Item -and $hit.SubItem -and $hit.Item.SubItems.IndexOf($hit.SubItem) -eq $ctx.RemoteCol -and $ctx.Remote.ContainsKey([string]$hit.Item.Tag)) { $overLink = $true }
         if ($overLink) { $lv.Cursor = [System.Windows.Forms.Cursors]::Hand } else { $lv.Cursor = [System.Windows.Forms.Cursors]::Default }
-        # Cost cell: breakdown tooltip.
-        if ($ctx.CostOn -and $hit.Item -and $hit.SubItem -and $hit.Item.SubItems.IndexOf($hit.SubItem) -eq 8) {
-            $cp = [string]$hit.Item.Tag
-            if ($ctx.TipCell -ne $cp) {
-                $r0 = $Rows | Where-Object { $_.Path -eq $cp } | Select-Object -First 1
-                if ($r0 -and $r0.CostTip) { $ctx.TipCell = $cp; $tip.Show([string]$r0.CostTip, $lv, ($e.X + 14), ($e.Y + 22), 20000) }
-            }
+        # Cell tooltips: Cost breakdown (column 8) and the main/master branch hint (column 5).
+        $col = -1; if ($hit.Item -and $hit.SubItem) { $col = $hit.Item.SubItems.IndexOf($hit.SubItem) }
+        $tipText = ''; $cp = ''
+        if ($hit.Item -and (($ctx.CostOn -and $col -eq 8) -or $col -eq 5)) {
+            $cp = [string]$hit.Item.Tag + '|' + $col
+            $r0 = $Rows | Where-Object { $_.Path -eq [string]$hit.Item.Tag } | Select-Object -First 1
+            if ($r0) { if ($col -eq 8) { $tipText = [string]$r0.CostTip } else { $tipText = [string]$r0.BranchHint } }
+        }
+        if ($tipText) {
+            if ($ctx.TipCell -ne $cp) { $ctx.TipCell = $cp; $tip.Show($tipText, $lv, ($e.X + 14), ($e.Y + 22), 20000) }
         } elseif ($ctx.TipCell) { $ctx.TipCell = $null; $tip.Hide($lv) }
     }.GetNewClosure())
     # Clicking a Remote cell opens that repository.
@@ -1813,6 +1829,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
             $bg = [System.Drawing.SystemColors]::Window
             if ($isOpen) { $bg = $green }
             foreach ($sub in $it.SubItems) { $sub.BackColor = $bg }
+            if ($r.BranchHint) { $it.SubItems[5].ForeColor = [System.Drawing.Color]::FromArgb(196, 98, 0) }
             if ($gh) {
                 $it.SubItems[$ctx.RemoteCol].ForeColor = [System.Drawing.Color]::FromArgb(0, 102, 204)
                 $it.SubItems[$ctx.RemoteCol].Font =New-Object System.Drawing.Font($lv.Font, [System.Drawing.FontStyle]::Underline)
@@ -2988,10 +3005,13 @@ function New-Row($d, [bool]$Scan, [bool]$Git, $Facts) {
         RemoteUrl = $(if ($gi) { $gi.RemoteUrl } else { $null })
         Branch = $(if ($gi) { $gi.Branch } else { $null })
         Dirty  = $(if ($gi) { $gi.Dirty } else { $null })
+        OriginHead = $(if ($gi) { $gi.OriginHead } else { '' })
+        BranchHint = ''
         HasHistory = (Test-ClaudeHistory $d.FullName)
         HasPreset = [bool](Get-Preset $d.Name)
         CostUsd = $null; CostText = ''; CostTip = ''
     }
+    $row.BranchHint = Get-BranchNameHint ([string]$row.Branch) ([string]$row.OriginHead)
     Set-RowCost $row
     $row
 }
@@ -3119,7 +3139,8 @@ if ($All) {
             if (-not $f.ContainsKey($r.Path)) { continue }
             $la = $f[$r.Path].La; $gi = $f[$r.Path].Gi
             if ($la) { $r.LastActiveDt = $la; $r.Relative = Format-Relative $la; $r.LastActive = $la.ToString('yyyy-MM-dd HH:mm') }
-            if ($gi) { $r.RemoteUrl = $gi.RemoteUrl; $r.Branch = $gi.Branch; $r.Dirty = $gi.Dirty }   # keep old values if a check failed
+            if ($gi) { $r.RemoteUrl = $gi.RemoteUrl; $r.Branch = $gi.Branch; $r.Dirty = $gi.Dirty; $r.OriginHead = $gi.OriginHead }
+            $r.BranchHint = Get-BranchNameHint ([string]$r.Branch) ([string]$r.OriginHead)   # keep old values if a check failed
             $r.IsGit = Test-Path -LiteralPath (Join-Path $r.Path '.git')
             if (-not $r.IsGit) { $r.Branch = $null; $r.Dirty = $null; $r.RemoteUrl = $null }
             $r.HasHistory = Test-ClaudeHistory $r.Path
