@@ -57,7 +57,7 @@ param(
 )
 
 # ---------------------------------------------------------------- config / state
-$AppVersion = '1.7.0'   # bump on every release; the update check compares it with the latest GitHub release tag
+$AppVersion = '1.7.1'   # bump on every release; the update check compares it with the latest GitHub release tag
 $cfg = @{
     root = 'C:\code'; roots = @(); projects = @(); top = 0; ignore = @()
     noiseDirs = @('.git','node_modules','.venv','venv','__pycache__','dist','build','.next','bin','obj','.idea','.vscode')

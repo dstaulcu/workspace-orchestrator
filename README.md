@@ -66,7 +66,17 @@ For a fresh Claude conversation use right-click > **Launch > Claude session**, o
 
 The first time you start the picker it asks whether to show what each project has cost. If you say yes, a **Cost** column appears with each project's estimated API-equivalent Claude Code cost; hover a value for sessions, the last 7 and 30 days and the cost by model. It is computed from the session files Claude Code keeps under `~\.claude\projects` (read-only, local, nothing is sent; subagents included). The Wrangler keeps only token counts and model names in its own `costs.json`, so totals survive Claude Code deleting old sessions. Prices are list prices from `assets/model-prices.json` (add or change models in `~\.config\workspace_app\model-prices.json`); a `~` before an amount means some models are not in the table yet. It is an estimate of what the tokens would cost at API prices, not what a subscription plan bills. Turn it on or off under **Settings > Show project cost**.
 
-**Settings > Claude Code data health...** shows how long Claude Code keeps its session history (default 30 days, then it deletes them) and whether telemetry is on (names only, never endpoints). It recommends raising `cleanupPeriodDays` and, only after you confirm and with a `settings.json.bak` backup, can set that one key. It never changes telemetry.
+```mermaid
+flowchart LR
+  T["Claude Code session files<br/>~/.claude/projects"] -->|"read-only"| S["Wrangler scanner"]
+  S --> L[("costs.json<br/>token counts per day and model")]
+  L --> C["Cost column"]
+  T -.->|"deleted after cleanupPeriodDays"| X["gone"]
+```
+
+The ledger is a small aggregate, so the raw files are only needed until they have been scanned once. [How it works, what is kept and dropped, and what that means for retention](docs/data-flow.md).
+
+**Settings > Claude Code data health...** shows how long Claude Code keeps its session history (default 30 days, then it deletes them) and whether telemetry is on (names only, never endpoints). It explains what each retention length means for cost, resuming old sessions and any future usage review (see the [data flow](docs/data-flow.md)), and, only after you confirm and with a `settings.json.bak` backup, can set that one key. It never changes telemetry.
 
 ## Updates
 

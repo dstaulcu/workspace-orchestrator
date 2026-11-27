@@ -4,6 +4,11 @@ All notable changes to Workspace Wrangler. Newest first. The picker opens this f
 and offers it after an update. Add new entries under **Unreleased** as you work; rename that heading to the
 version when you release.
 
+## 1.7.1 - 2026-11-27
+
+### Added
+- `docs/data-flow.md`: diagrams of how the Cost feature reads Claude Code's session files, what it keeps in `costs.json` and what it drops, when the scan happens, and what that means for choosing `cleanupPeriodDays`; linked from the README's Project cost section.
+
 ## 1.7.0 - 2026-11-27
 
 ### Fixed
