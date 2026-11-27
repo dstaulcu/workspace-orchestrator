@@ -4,6 +4,14 @@ All notable changes to Workspace Wrangler. Newest first. The picker opens this f
 and offers it after an update. Add new entries under **Unreleased** as you work; rename that heading to the
 version when you release.
 
+## 1.9.0 - 2026-11-27
+
+### Added
+- **Git > Push current branch to origin...** pushes the current branch after showing the project, the remote URL, the branch, how many commits will go and the exact command (`git push -u origin <branch>` the first time, `git push` after that). It is a plain push: never forced, no tags, no other branches. It is greyed out without an `origin`, refuses when there are no commits or nothing new to push, and when the remote rejects the push it stops and explains (the remote has newer commits; this app does not pull). Results use the same message box and `app.log` entry as the other Git actions.
+
+### Changed
+- The IDE entry on the right-click menu now shows the product name (for example **Open in Visual Studio Code**) instead of the command in `config.json` (`code`); the command is kept in the tooltip. Known commands (VS Code and Insiders, VSCodium, Cursor, Windsurf, Zed, Sublime Text, the JetBrains IDEs, Visual Studio, Notepad++, Emacs, Vim) get their product name; anything else shows the command name. The IDE button's result message uses it too.
+
 ## 1.8.2 - 2026-11-27
 
 ### Added

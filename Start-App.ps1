@@ -57,7 +57,7 @@ param(
 )
 
 # ---------------------------------------------------------------- config / state
-$AppVersion = '1.8.2'   # bump on every release; the update check compares it with the latest GitHub release tag
+$AppVersion = '1.9.0'   # bump on every release; the update check compares it with the latest GitHub release tag
 $cfg = @{
     root = 'C:\code'; roots = @(); projects = @(); top = 0; ignore = @()
     noiseDirs = @('.git','node_modules','.venv','venv','__pycache__','dist','build','.next','bin','obj','.idea','.vscode')
@@ -869,6 +869,29 @@ function Get-RenameMainPlan([string]$Dir) {
     $p.Ok = $true; $p
 }
 
+# What "Push current branch to origin" would do in $Dir (confirmation text and the action itself). Reads local state only.
+function Get-PushPlan([string]$Dir) {
+    $p = [pscustomobject]@{ Ok = $false; Message = ''; Branch = ''; Origin = ''; Count = 0; HasUpstream = $false; Command = '' }
+    if (-not (Test-Path -LiteralPath (Join-Path $Dir '.git'))) { $p.Message = 'This folder is not a git repository.'; return $p }
+    $p.Origin = "$(& git -C $Dir remote get-url origin 2>$null)".Trim()
+    if (-not $p.Origin) { $p.Message = "This project has no remote named 'origin'. Use Git > Create remote repository or Add existing remote URL first."; return $p }
+    $p.Branch = "$(& git -C $Dir symbolic-ref --short HEAD 2>$null)".Trim()
+    if (-not $p.Branch) { $p.Message = 'HEAD is detached; check out a branch first.'; return $p }
+    & git -C $Dir rev-parse --verify --quiet HEAD 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) { $p.Message = 'There is nothing to push yet: this repository has no commits.'; return $p }
+    $up = "$(& git -C $Dir rev-parse --abbrev-ref '@{u}' 2>$null)".Trim()
+    if ($LASTEXITCODE -eq 0 -and $up) {
+        $p.HasUpstream = $true
+        $p.Count = [int]("$(& git -C $Dir rev-list --count '@{u}..HEAD' 2>$null)".Trim())
+        if ($p.Count -eq 0) { $p.Message = "Nothing to push: '$($p.Branch)' has no commits that $up does not already have (as far as this clone knows; it does not fetch)."; return $p }
+        $p.Command = 'git push'
+    } else {
+        $p.Count = [int]("$(& git -C $Dir rev-list --count HEAD 2>$null)".Trim())
+        $p.Command = "git push -u origin $($p.Branch)"
+    }
+    $p.Ok = $true; $p
+}
+
 function Invoke-GitOp([string]$Op, [string]$Dir, $Opts) {
     $r = [pscustomobject]@{ Ok = $false; Message = '' }
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) { $r.Message = 'git was not found on PATH.'; return $r }
@@ -976,6 +999,21 @@ function Invoke-GitOp([string]$Op, [string]$Dir, $Opts) {
                     if ($push) { $r.Message += ' Pushed the current branch.' }
                 }
             }
+        }
+        'push' {
+            $plan = Get-PushPlan $Dir
+            if (-not $plan.Ok) { $r.Message = $plan.Message; return $r }
+            if ($DryRun) { $r.Message = "Dry run: would run: $($plan.Command) ($($plan.Count) commit(s) to $($plan.Origin))"; return $r }
+            $args2 = @('push'); if (-not $plan.HasUpstream) { $args2 = @('push', '-u', 'origin', $plan.Branch) }   # never --force, never tags
+            $out = (& git -C $Dir @args2 2>&1 | ForEach-Object { "$_" } | Out-String).Trim()
+            if ($LASTEXITCODE -ne 0) {
+                $keep = @($out -split "`r?`n" | Where-Object { $_ -match '^\s*(!|error:|fatal:|remote:)' } | Select-Object -First 3)
+                if (-not $keep.Count) { $keep = @($out -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -Last 3) }
+                $why = ''; if ($out -match 'rejected|fetch first|non-fast-forward') { $why = "`n`nThe remote has commits this clone does not have. Bring them in first (git pull, or fetch and merge), then push again; this app does not pull." }
+                $r.Message = "The push was not accepted: $(($keep | ForEach-Object { $_.Trim() }) -join ' ')$why`n`nNothing was forced. Command: $($plan.Command)"; return $r
+            }
+            $r.Ok = $true; $r.Message = "Pushed $($plan.Count) commit(s) on '$($plan.Branch)' to origin."
+            if (-not $plan.HasUpstream) { $r.Message += " '$($plan.Branch)' now tracks origin/$($plan.Branch)." }
         }
         'rename-main' {
             $plan = Get-RenameMainPlan $Dir
@@ -1142,6 +1180,13 @@ function Invoke-PickerGitOp([string]$Op, $Row, $OwnerForm, [string]$PresetOwner 
             $opts | Add-Member -NotePropertyName PersonalLogin -NotePropertyValue ([string]$login)
             $res = Invoke-GitOp 'remote' $Row.Path $opts
         }
+        'push' {
+            $plan = Get-PushPlan $Row.Path
+            if (-not $plan.Ok) { return $plan.Message }
+            $q = "Push the current branch to origin?`n`nProject: $($Row.Path)`nRemote:  $($plan.Origin)`nBranch:  $($plan.Branch)`nCommits: $($plan.Count)`n`nThis will run:`n  $($plan.Command)`n`nIt is a plain push: nothing is forced, and tags and other branches are not pushed."
+            if ([System.Windows.Forms.MessageBox]::Show($OwnerForm, $q, 'Push to origin', 'YesNo', 'Question') -ne [System.Windows.Forms.DialogResult]::Yes) { return 'Cancelled.' }
+            $res = Invoke-GitOp 'push' $Row.Path $null
+        }
         'rename-main' {
             $plan = Get-RenameMainPlan $Row.Path
             if (-not $plan.Ok) { return $plan.Message }
@@ -1286,6 +1331,18 @@ function Start-InstallUpdate($Info) {
 
 # Opens each project folder in the user's IDE (config `ide`, default VS Code's `code`), one new window per project
 # (`ideArgs`, default -n). Returns a status line. Launching an IDE never modifies the project.
+# Friendly product name for the configured IDE command (config "ide"), so menus say "Visual Studio Code" rather than "code".
+function Get-IdeDisplayName([string]$Command) {
+    $c = ([string]$Command).Trim(); if (-not $c) { $c = 'code' }
+    $leaf = [IO.Path]::GetFileNameWithoutExtension($c).ToLowerInvariant()
+    $map = @{ 'code' = 'Visual Studio Code'; 'code-insiders' = 'Visual Studio Code Insiders'; 'codium' = 'VSCodium'; 'vscodium' = 'VSCodium'; 'cursor' = 'Cursor'; 'windsurf' = 'Windsurf'; 'zed' = 'Zed'
+        'subl' = 'Sublime Text'; 'sublime_text' = 'Sublime Text'; 'notepad++' = 'Notepad++'; 'idea' = 'IntelliJ IDEA'; 'idea64' = 'IntelliJ IDEA'; 'pycharm' = 'PyCharm'; 'pycharm64' = 'PyCharm'
+        'webstorm' = 'WebStorm'; 'webstorm64' = 'WebStorm'; 'rider' = 'Rider'; 'rider64' = 'Rider'; 'clion' = 'CLion'; 'goland' = 'GoLand'; 'phpstorm' = 'PhpStorm'; 'rubymine' = 'RubyMine'
+        'devenv' = 'Visual Studio'; 'fleet' = 'Fleet'; 'atom' = 'Atom'; 'emacs' = 'Emacs'; 'gvim' = 'Vim'; 'nvim-qt' = 'Neovim' }
+    if ($map.ContainsKey($leaf)) { return $map[$leaf] }
+    [IO.Path]::GetFileNameWithoutExtension($c)
+}
+
 function Invoke-OpenIde([string[]]$Paths) {
     $ide = [string]$cfg.ide; if (-not $ide) { $ide = 'code' }
     $exe = $null
@@ -1306,7 +1363,7 @@ function Invoke-OpenIde([string[]]$Paths) {
         } catch { return "Could not start $ide : $_" }
     }
     if ($DryRun) { return ($dry -join "`n") }
-    "Opened $n project(s) in $ide."
+    "Opened $n project(s) in $(Get-IdeDisplayName $ide)."
 }
 
 # ---------------------------------------------------------------- branding images, splash, About
@@ -2004,7 +2061,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
         $status.Text = $msg
         # The status line alone is easy to miss (and the window refreshes it when it is re-activated after a dialog), so show the outcome.
         if ($msg -and $msg -ne 'Cancelled.') {
-            $good = ($msg -match '^(Created|Initialized|Added|Renamed|Dry run)')
+            $good = ($msg -match '^(Created|Initialized|Added|Renamed|Pushed|Dry run)')
             $ic = $(if ($good) { 'Information' } else { 'Warning' })
             $tail = ''; if (-not $good) { $tail = "`n`nThis is in the log; Settings > Copy diagnostics puts it on the clipboard for an issue report." }
             [void][System.Windows.Forms.MessageBox]::Show($form, ($msg + $tail), 'Git', 'OK', $ic)
@@ -2033,9 +2090,10 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
         $mRemote = New-Object System.Windows.Forms.ToolStripMenuItem 'Create remote repository'
         [void]$items.Add($mRemote)
         $mUrl = $items.Add('Add existing remote URL...')
+        $mPush = $items.Add('Push current branch to origin...')
         $mRen = $items.Add('Rename branch to main...')
         if (-not $row) {
-            foreach ($mi in @($mOpen, $mInit, $mRemote, $mUrl, $mRen)) { $mi.Enabled = $false; $mi.ToolTipText = 'Select a project first.' }
+            foreach ($mi in @($mOpen, $mInit, $mRemote, $mUrl, $mPush, $mRen)) { $mi.Enabled = $false; $mi.ToolTipText = 'Select a project first.' }
             return
         }
         $mOpen.Enabled = [bool]$row.RemoteUrl
@@ -2049,6 +2107,9 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
         $mUrl.Enabled = -not $row.RemoteUrl
         $mUrl.ToolTipText = $(if ($row.RemoteUrl) { 'This project already has a remote.' } else { 'Attach a repository you already created on any host, by URL.' })
         $mUrl.Tag = @{ Fn = $runGit; A = @('addurl', '') }; $mUrl.Add_Click($menuClick)
+        $mPush.Enabled = ($isGit -and [bool]$row.RemoteUrl)
+        $mPush.ToolTipText = $(if (-not $isGit) { 'Not a git repository.' } elseif (-not $row.RemoteUrl) { 'This project has no remote yet.' } else { 'Push the current branch to origin (asks first and shows the command; a plain push: never forced, no tags, no other branches).' })
+        $mPush.Tag = @{ Fn = $runGit; A = @('push', '') }; $mPush.Add_Click($menuClick)
         $mRen.Enabled = ($isGit -and [string]$row.Branch -ne 'main' -and [string]$row.Branch -ne '')
         $mRen.ToolTipText = $(if (-not $isGit) { 'Not a git repository.' } elseif ([string]$row.Branch -eq 'main') { "Already on 'main'." } else { "Rename '$($row.Branch)' to 'main' (asks first and shows the commands; local only, and it refuses if origin already has branches: rename those on the host instead)." })
         $mRen.Tag = @{ Fn = $runGit; A = @('rename-main', '') }; $mRen.Add_Click($menuClick)
@@ -2077,7 +2138,8 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
     # highlighted project(s); Git acts on the first highlighted one.
     $rowMenu = New-Object System.Windows.Forms.ContextMenuStrip
     $ctx.ClaudeVariants = @($cfg.claudeVariants | Where-Object { $_ -and $_.name -and $_.args })
-    $ctx.IdeName = [string]$cfg.ide; if (-not $ctx.IdeName) { $ctx.IdeName = 'code' }
+    $ctx.IdeCmd = [string]$cfg.ide; if (-not $ctx.IdeCmd) { $ctx.IdeCmd = 'code' }
+    $ctx.IdeName = Get-IdeDisplayName $ctx.IdeCmd
     $selRows = {
         @($Rows | Where-Object { $ctx.Checked.Contains([string]$_.Path) })
     }.GetNewClosure()
@@ -2181,7 +2243,7 @@ function Show-FormsPicker($Rows, [string]$InitialFilter, [string[]]$Preselect,
         }
         # IDE >
         $mI = New-Object System.Windows.Forms.ToolStripMenuItem 'IDE'; [void]$s.Items.Add($mI)
-        $it = $mI.DropDownItems.Add("Open in $($ctx.IdeName)"); $it.ToolTipText = 'Open the selected project(s) in your IDE, one new window each (config "ide").'
+        $it = $mI.DropDownItems.Add("Open in $($ctx.IdeName)"); $it.ToolTipText = "Open the selected project(s) in $($ctx.IdeName), one new window each (config ide: $($ctx.IdeCmd))."
         $it.Tag = @{ Fn = $actIde; A = @() }; $it.Add_Click($menuClick)
         $it = $mI.DropDownItems.Add('Open folder in File Explorer'); $it.ToolTipText = 'Show the project folder in Windows File Explorer.'
         $it.Tag = @{ Fn = $actExplorer; A = @() }; $it.Add_Click($menuClick)
