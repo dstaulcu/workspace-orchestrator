@@ -23,6 +23,7 @@
   "gitOpsOrg": "",
   "gitOpsTargets": [],
   "gitOpsVisibility": "private",
+  "defaultBranch": "main",
   "git": "git",
   "hotkey": "Ctrl+Alt+W",
   "claudeVariants": [

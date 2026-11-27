@@ -4,6 +4,11 @@ All notable changes to Workspace Wrangler. Newest first. The picker opens this f
 and offers it after an update. Add new entries under **Unreleased** as you work; rename that heading to the
 version when you release.
 
+## 1.7.2 - 2026-11-27
+
+### Changed
+- **New repositories start on `main`.** `git init` from the Git menu, **+ New project** and **Create remote repository** now use `git init -b main` instead of whatever git defaults to (often `master`). The name comes from the new `defaultBranch` setting; git's own `init.defaultBranch`, if you set it, still wins. Older git without `-b` falls back to a plain init plus renaming the empty branch. Existing repositories are not renamed.
+
 ## 1.7.1 - 2026-11-27
 
 ### Added

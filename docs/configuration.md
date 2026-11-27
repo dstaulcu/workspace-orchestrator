@@ -43,6 +43,7 @@ All three files live in `~\.config\workspace_app\` (outside the repo, so updates
 | `gitOpsOrg` | string | `""` | Organization pre-filled as owner in **Git > Create remote repository on GitHub** (blank = your own account) | dialog |
 | `gitOpsTargets` | array | `[]` | Entries for the **Git > Create remote repository** submenus: a string = GitHub organization, or `{ "provider": "gitlab", "owner": "group/sub", "host": "gitlab.example.com" }` (`github`, `gitlab` or `azure`; Azure owner = `org/project`) | submenu |
 | `gitOpsVisibility` | `private` \| `internal` \| `public` | `private` | Visibility pre-selected in that dialog | dialog |
+| `defaultBranch` | string | `main` | Branch name for new repositories created by the Git menu, **+ New project** and **Create remote repository** (`git init -b <name>`). If you set git's own `init.defaultBranch`, that wins. Existing repositories are never renamed. | |
 | `refreshSeconds` | int | `60` | While the picker is open, re-check which projects have tabs open every N seconds (min 5; `0` = off) | none |
 | `git` | string | `git` | git to use: a command on PATH, or the full path to `git.exe` (portable installs) | all git calls |
 | `hotkey` | string | `Ctrl+Alt+W` | Global hotkey while the picker is open: cascade all open workspace windows to the front (needs a modifier; empty = off) | none |

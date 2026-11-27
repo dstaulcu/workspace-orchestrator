@@ -57,14 +57,14 @@ param(
 )
 
 # ---------------------------------------------------------------- config / state
-$AppVersion = '1.7.1'   # bump on every release; the update check compares it with the latest GitHub release tag
+$AppVersion = '1.7.2'   # bump on every release; the update check compares it with the latest GitHub release tag
 $cfg = @{
     root = 'C:\code'; roots = @(); projects = @(); top = 0; ignore = @()
     noiseDirs = @('.git','node_modules','.venv','venv','__pycache__','dist','build','.next','bin','obj','.idea','.vscode')
     maxScanFiles = 5000; maxScanDepth = 6; picker = 'Forms'
     shell = $true; diff = $true; tabColors = $true; gitInfo = $true; claudeArgs = ''; refreshSeconds = 60; arrangeOnLaunch = $true; arrangeStyle = 'cascade'; keepDesktopIconsClear = $true; windowWidth = 1100; windowHeight = 750; restoreLayouts = $true
     checkForUpdates = $true; updateCheckHours = 24; updateRepo = 'dstaulcu/workspace-wrangler'
-    gitOpsOrg = ''; gitOpsTargets = @(); gitOpsVisibility = 'private'
+    gitOpsOrg = ''; gitOpsTargets = @(); gitOpsVisibility = 'private'; defaultBranch = 'main'
     ide = 'code'; ideArgs = '-n'; git = 'git'; hotkey = 'Ctrl+Alt+W'; claudeVariants = @()
 }
 # Settings live outside the repo so they survive updates; files from older versions are moved over once.
@@ -837,10 +837,21 @@ function Invoke-GitOp([string]$Op, [string]$Dir, $Opts) {
     switch ($Op) {
         'init' {
             if ($isGit) { $r.Message = "$Dir is already a git repository."; return $r }
-            if ($DryRun) { $r.Message = "Dry run: would run 'git init' in $Dir."; return $r }
-            $out = (& git -C $Dir init 2>&1 | ForEach-Object { "$_" } | Out-String).Trim()
+            # New repositories start on "main" (config defaultBranch) unless the user has set git's own init.defaultBranch, which wins.
+            $userBranch = "$(& git config --get init.defaultBranch 2>$null)".Trim()
+            $branch = ([string]$cfg.defaultBranch).Trim(); if (-not $branch) { $branch = 'main' }
+            if (-not $userBranch) { & git check-ref-format --branch $branch 2>$null | Out-Null; if ($LASTEXITCODE -ne 0) { $branch = 'main' } }
+            if ($DryRun) { $r.Message = $(if ($userBranch) { "Dry run: would run 'git init' in $Dir (branch $userBranch, from your git config)." } else { "Dry run: would run 'git init -b $branch' in $Dir." }); return $r }
+            if ($userBranch) { $out = (& git -C $Dir init 2>&1 | ForEach-Object { "$_" } | Out-String).Trim(); $used = $userBranch }
+            else {
+                $out = (& git -C $Dir init -b $branch 2>&1 | ForEach-Object { "$_" } | Out-String).Trim(); $used = $branch
+                if ($LASTEXITCODE -ne 0) {   # git older than 2.28 has no -b: plain init, then point the empty repository's HEAD at the branch
+                    $out = (& git -C $Dir init 2>&1 | ForEach-Object { "$_" } | Out-String).Trim()
+                    if ($LASTEXITCODE -eq 0) { & git -C $Dir symbolic-ref HEAD "refs/heads/$branch" 2>$null }
+                }
+            }
             if ($LASTEXITCODE -ne 0) { $r.Message = "git init failed: $out"; return $r }
-            $r.Ok = $true; $r.Message = "Initialized a local git repository in $Dir."
+            $r.Ok = $true; $r.Message = "Initialized a local git repository in $Dir (branch $used)."
         }
         'remote' {
             $prov = ([string]$Opts.Provider).ToLowerInvariant(); if (-not $prov) { $prov = 'github' }
